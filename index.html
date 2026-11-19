@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#141416">
+    <meta name="description" content="Design and export a custom 3D-printable electronics enclosure.">
+    <title>Just in Case — Enclosure designer</title>
+  </head>
+  <body>
+    <header class="top-bar">
+      <div class="shell top-bar-inner">
+        <div class="brand">
+          <div class="brand-mark" data-icon="brand"></div>
+          <span>Just in Case</span>
+        </div>
+        <div class="project-title">
+          <span data-icon="pencil"></span>
+          <input id="project-name" aria-label="Project name" maxlength="80" spellcheck="false">
+        </div>
+        <div class="project-actions">
+          <button id="open-project" class="button button-quiet" type="button"><span data-icon="folder"></span>Open JSON</button>
+          <button id="save-project" class="button" type="button" disabled><span data-icon="file"></span>Save JSON</button>
+          <div class="export-control">
+            <button id="export-button" class="button button-primary" type="button" popovertarget="export-options" disabled>
+              <span data-icon="download"></span>Export STL<span class="chevron" data-icon="chevron"></span>
+            </button>
+            <div id="export-options" class="export-options" popover>
+              <button type="button" data-export="base"><strong>Base</strong><small>Open side facing up</small></button>
+              <button type="button" data-export="lid"><strong>Lid</strong><small>Outside face on the print bed</small></button>
+              <button type="button" data-export="both"><strong>Base and lid</strong><small>One STL with parts side by side</small></button>
+            </div>
+          </div>
+        </div>
+        <input id="project-file" type="file" accept=".json,application/json" hidden>
+      </div>
+    </header>
+
+    <main class="shell workspace">
+      <div class="page-intro">
+        <div>
+          <h1>Enclosure designer</h1>
+          <p>Size your case, place cutouts, and get it ready to print.</p>
+        </div>
+        <div class="save-status" id="save-status" role="status"><span data-icon="drive"></span><span id="save-status-text">Starting editor…</span></div>
+      </div>
+
+      <div id="notice" class="notice" hidden>
+        <span data-icon="alert"></span>
+        <span id="notice-text" role="status"></span>
+      </div>
+
+      <div class="workbench">
+        <section class="panel parameters" aria-labelledby="parameters-title">
+          <div class="panel-header parameter-header">
+            <h2 id="parameters-title"><span data-icon="sliders"></span>Parameters</h2>
+            <span class="unit-label">mm</span>
+          </div>
+
+          <details class="parameter-section" open>
+            <summary>
+              <span class="section-icon" data-icon="box"></span><span>Body</span>
+              <span class="section-summary" id="body-summary"></span><span class="chevron" data-icon="chevron"></span>
+            </summary>
+            <div id="body-fields" class="fields"></div>
+          </details>
+
+          <details class="parameter-section" open>
+            <summary>
+              <span class="section-icon" data-icon="layers"></span><span>Lid</span>
+              <span class="section-summary" id="lid-summary"></span><span class="chevron" data-icon="chevron"></span>
+            </summary>
+            <div class="section-content">
+              <div id="lid-fields" class="fields"></div>
+              <p class="field-hint">Clearance is the gap on each side of the lip. Set lip depth to 0 for a flat lid.</p>
+            </div>
+          </details>
+
+          <details class="parameter-section" id="cutout-section">
+            <summary>
+              <span class="section-icon" data-icon="scissors"></span><span>Cutouts</span>
+              <span class="section-summary" id="cutouts-summary"></span><span class="chevron" data-icon="chevron"></span>
+            </summary>
+            <div class="section-content cutout-content">
+              <p class="field-hint">Offsets start at the wall midpoint. Positive offsets follow X on the front and back, and Y on the left and right.</p>
+              <div id="cutout-list"></div>
+              <button type="button" id="add-cutout" class="button add-cutout"><span data-icon="plus"></span>Add cutout</button>
+            </div>
+          </details>
+
+          <details class="parameter-section" id="mount-section">
+            <summary>
+              <span class="section-icon" data-icon="bolt"></span><span>Mounting</span>
+              <span class="section-summary" id="mounts-summary"></span><span class="chevron" data-icon="chevron"></span>
+            </summary>
+            <div class="section-content">
+              <label class="toggle-row" for="mounts-enabled">
+                <span>Four PCB mounting posts</span>
+                <input type="checkbox" id="mounts-enabled" role="switch">
+              </label>
+              <div id="mount-fields" class="fields"></div>
+              <p id="mount-hint" class="field-hint">Post height starts at the inside floor. Pilot holes stop at the floor.</p>
+            </div>
+          </details>
+
+          <div class="parameter-footer">
+            <button type="button" class="button button-quiet" id="reset-project"><span data-icon="restart"></span>Reset to defaults</button>
+          </div>
+        </section>
+
+        <section class="panel preview" aria-labelledby="preview-title">
+          <div class="panel-header preview-header">
+            <h2 id="preview-title"><span data-icon="cube"></span>3D preview</h2>
+            <div class="view-modes" role="group" aria-label="Preview mode">
+              <button type="button" data-view="exploded" aria-pressed="true">Exploded</button>
+              <button type="button" data-view="assembled" aria-pressed="false">Assembled</button>
+              <button type="button" data-view="base" aria-pressed="false">Base</button>
+              <button type="button" data-view="lid" aria-pressed="false">Lid</button>
+            </div>
+          </div>
+          <div id="viewport" class="viewport">
+            <div class="viewport-tools" role="group" aria-label="Camera controls">
+              <button type="button" id="reset-camera" class="icon-button" title="Reset camera" aria-label="Reset camera"><span data-icon="fit"></span></button>
+              <button type="button" id="toggle-grid" class="icon-button" title="Toggle grid" aria-label="Toggle grid" aria-pressed="true"><span data-icon="grid"></span></button>
+            </div>
+            <div id="scene" class="scene"></div>
+            <canvas id="axes" class="axes" width="144" height="144" aria-hidden="true"></canvas>
+            <div id="preview-message" class="preview-message" role="status">Preparing the 3D preview…</div>
+          </div>
+          <footer class="preview-footer">
+            <div class="size-readout" title="Assembled width × depth × height">
+              <span data-icon="ruler"></span><span id="size-value">—</span>
+            </div>
+            <div class="preview-help"><span data-icon="mouse"></span><span>Drag to orbit · Scroll to zoom</span></div>
+          </footer>
+        </section>
+      </div>
+    </main>
+
+    <dialog id="reset-dialog">
+      <form method="dialog">
+        <h2>Reset this project?</h2>
+        <p>This replaces the current parameters and project name with the example enclosure.</p>
+        <div class="dialog-actions">
+          <button type="submit" class="button" value="cancel" autofocus>Cancel</button>
+          <button type="submit" class="button button-primary" value="reset">Reset project</button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
