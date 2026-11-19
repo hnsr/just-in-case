@@ -2,6 +2,8 @@
 
 A browser-based parametric enclosure designer for 3D-printed electronics projects. It opens with an editable example.
 
+[Open Just in Case](https://hnsr.github.io/just-in-case/)
+
 ## Run locally
 
 Use Node.js 22.12 or later.
