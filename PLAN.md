@@ -1,6 +1,6 @@
-## Just in Case
+# Just in Case
 
-A web-based tool for creating fully parameterized 3D printable enclosures for (for example) DIY electronics projects.
+A web-based tool for creating fully parameterized 3D printable enclosures for (for example) electronics projects.
 
 By limiting the scope of the tool to designing enclosures, we can avoid having to generelize too much, and we can make it easier for users not familiar with CAD design to quickly design an enclosure for their projects.
 
@@ -10,33 +10,78 @@ Projects should be saved as plain JSON files that can be either saved in local s
 
 ## Object hierarchy
 
-TODO: Describe object hierarchy, and how defining parts and features works. Some thoughts:
+A project consists of a hierarchy of objects, with the root object always being the actual case itself.
 
-A project consists of a hierarchy of objects (parts and features), with the root object being the actual case itself. Parts can be added relative to the case. Features can be things like cable exit holes, screw holes are ducts. Parts can be things like a 'bed' to house a printed circuit board, or a duct for cable strain relief.
+Objects are of a type, and each object has:
 
-Which features are available on an object is a property of the object type they are defined on (i.e. a case supports cable exit holes). Feature placement and instantiation is done in coordination with the parent object type.
+- Properties: some arbitrary properties the influence the how the object's main shape is generated and what parameters and features are available
+- Parameters: the basic dimensional parameters of the object
+- Features: type-specific, optional modifications that can be instantiated and positioned onto anchor points/surfaces of the main object
+    - Features can have their own parameters and properties
+- Child objects: these are their own objects but positioned relative to their parent object
 
-Parts are more separate from the parent object, but can be positioned relative to anchor points that are exposed by parent objects.
+Each type implementation takes the above as an input to generate the model.
 
-Custom objects are parts that are procedurally generated using basic shapes
+### Object properties
 
-## Enclosure root object
+Properties are arbitrary type-specific inputs that define how the base object is structured. It influences which parameters and features are available for the object.
 
-### Enclosure type
+Properties must be set on instantiation, as changing them is a potentially 'lossy' operation, since the available parameters, features and anchor primitives might change.
 
-### Enclosure features
+For an enclosure object type an option could be 'Do not include lid' (boolean)
 
-## Parts
+TODO: Consider removing the properties concept due to the complexity it introduces, just create a new type instead if it's a different kind of object?
 
-## Custom objects
+### Object parameters
+
+Parameters define dimensional parameters of an object, such as width, height, depth, thickness, tolerances, and so on.
+
+A paremeter can be given as a formula, in which it's possible to refer to user-defined global project variables.
+
+### Object features
+
+Features are type-specific modifiations that a type implementation exposes. Examples are cable exit holes.
+
+They differ from properties in that they can optionally be defined in zero ore more instances, with each instance having its own set parameters and properties.
+
+The type implementation can fully take responsibility of feature placement, or expose placement options onto anchoring primitives:
+- Fixed points
+- Line segments
+- Bounded surfaces
+
+### Feature properties
+
+These are similar to object properties and define how a feature should be generated.
+
+TODO: Think of some examples?
+
+### Feature parameters
+
+These are similar to object parameters and defined the dimensional properties of a features
+
+Example: the diameter of a cable exit hole.
+
+
+## Included object types
+
+This is a description of object types that should be included with the application
+
+### Split enclosure (root object)
+
+This is an enclosure that is split in a top and bottom part.
+
+TODO: Define propers/feats/anchoring primitives
 
 ## UI/UX
 
-The object hierarchy should be shown on a side-panel on the left hand side. From there, parameters for each object can be set
+The object hierarchy should be shown on a side-panel on the left hand side. From there, parameters, properties, features and child objects for each object can be defined.
+
+### Live preview
+
+The live preview should
 
 ## Additional features
 
-- Live preview: explosion view, lower or uppper half view
-- Sparse export: a rendering of the model with as little volume/material as possible, for testing dimensions and tolerances
+- Sparse export: a rendering of the model with as little volume/material as possible, for doing test prints to check dimensions and tolerances.
 
 
