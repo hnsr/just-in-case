@@ -4,10 +4,10 @@ import './styles.css'
 import wasmURL from 'manifold-3d/manifold.wasm?url'
 import { initGeometry, buildEnclosure } from './geometry.js'
 import { addIcons } from './icons.js'
+import { createInspector } from './inspector.js'
 import { createPreview } from './preview.js'
 import {
-  BODY_FIELDS, LID_FIELDS, MOUNT_FIELDS, MAX_CUTOUTS, SIDES, STORAGE_KEY,
-  defaultProject, makeCutout, parseProject, projectJSON, validateProject,
+  STORAGE_KEY, LEGACY_STORAGE_KEY, defaultProject, newProject, parseProject, projectJSON, evaluateProject,
 } from './project.js'
 import { enclosureSTL } from './stl.js'
 
@@ -17,26 +17,25 @@ const fileInput = $('#project-file')
 const saveButton = $('#save-project')
 const exportButton = $('#export-button')
 const exportOptions = $('#export-options')
-const cutoutList = $('#cutout-list')
-const addCutoutButton = $('#add-cutout')
-const mountToggle = $('#mounts-enabled')
 const previewMessage = $('#preview-message')
 const notices = $('#notice')
 const toast = $('#toast')
+const viewButtons = [...document.querySelectorAll('[data-view]')]
 const numberFormat = new Intl.NumberFormat('en', { maximumFractionDigits: 3, useGrouping: false })
 
 let geometry
 let preview
 let currentModel
-let currentProject
+let lastResolvedRoot
 let modelTimer
 let toastTimer
 let restoreError = false
-let loadError
+let loadError = false
+let viewMode = 'exploded'
 
 function restoreProject() {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY)
+    const saved = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY)
     if (saved) return parseProject(saved)
   } catch {
     restoreError = true
@@ -45,9 +44,6 @@ function restoreProject() {
 }
 
 let project = restoreProject()
-if (restoreError) {
-  showNotice('The saved project could not be loaded. The example is open.')
-}
 
 function showNotice(message) {
   notices.hidden = !message
@@ -68,105 +64,6 @@ function notify(message) {
   toastTimer = setTimeout(() => { toast.hidden = true }, 3200)
 }
 
-function numberField(path, field, value) {
-  const label = document.createElement('label')
-  label.className = 'field'
-  label.innerHTML = '<span class="field-label"></span><span class="number-input"><input type="number" step="any"><span aria-hidden="true">mm</span></span>'
-  label.firstElementChild.textContent = field.label
-  const input = label.querySelector('input')
-  input.value = value
-  input.dataset.field = path
-  input.step = field.step ?? 0.1
-  input.min = field.min
-  input.max = field.max
-  return label
-}
-
-function renderFields(group, schema) {
-  const destination = $('#' + ({ body: 'body-fields', lid: 'lid-fields', mounts: 'mount-fields' }[group]))
-  destination.replaceChildren(...Object.entries(schema).map(([key, field]) => numberField(group + '.' + key, field, project[group][key])))
-}
-
-function selectField(path, label, options, value) {
-  const field = document.createElement('label')
-  field.className = 'field'
-  field.innerHTML = '<span class="field-label"></span><span class="select-input"><select></select><span aria-hidden="true" data-icon="chevron"></span></span>'
-  field.firstElementChild.textContent = label
-  const select = field.querySelector('select')
-  select.dataset.field = path
-  select.append(...options.map((option) => new Option(option, option)))
-  select.value = value
-  return field
-}
-
-function renderCutouts() {
-  const cards = project.cutouts.map((cutout, index) => {
-    const prefix = 'cutouts.' + index + '.'
-    const card = document.createElement('div')
-    const round = cutout.shape === 'Circle'
-    card.className = 'cutout'
-    card.innerHTML = '<div class="cutout-header"><h3></h3><button type="button" class="icon-button" data-icon="trash"></button></div><div class="fields"></div>'
-    card.querySelector('h3').textContent = 'Cutout ' + (index + 1)
-    const remove = card.querySelector('button')
-    remove.setAttribute('aria-label', 'Remove cutout ' + (index + 1))
-    remove.title = 'Remove cutout'
-    remove.addEventListener('click', () => {
-      project.cutouts.splice(index, 1)
-      renderCutouts()
-      const nextCard = cutoutList.children[Math.min(index, project.cutouts.length - 1)]
-      const nextControl = nextCard?.querySelector('button') ?? addCutoutButton
-      nextControl.focus()
-      scheduleUpdate()
-    })
-    const fields = card.querySelector('.fields')
-    fields.append(
-      selectField(prefix + 'side', 'Wall', SIDES, cutout.side),
-      selectField(prefix + 'shape', 'Shape', ['Rectangle', 'Circle'], cutout.shape),
-      numberField(prefix + 'width', { label: round ? 'Diameter' : 'Width', min: 1, max: 400 }, cutout.width),
-    )
-    if (!round) fields.append(numberField(prefix + 'height', { label: 'Height', min: 1, max: 200 }, cutout.height))
-    fields.append(
-      numberField(prefix + 'offset', { label: 'Wall offset', min: -200, max: 200 }, cutout.offset),
-      numberField(prefix + 'z', { label: 'Center from bed', min: 0, max: 200 }, cutout.z),
-    )
-    addIcons(card)
-    return card
-  })
-  cutoutList.replaceChildren(...cards)
-  addCutoutButton.disabled = project.cutouts.length >= MAX_CUTOUTS
-}
-
-function renderForm() {
-  nameInput.value = project.name
-  renderFields('body', BODY_FIELDS)
-  renderFields('lid', LID_FIELDS)
-  renderFields('mounts', MOUNT_FIELDS)
-  renderCutouts()
-  mountToggle.checked = project.mounts.enabled
-  updateSummaries()
-}
-
-function updateSummaries() {
-  const format = (value) => Number.isFinite(value) ? numberFormat.format(value) : '—'
-  const { width, depth, height } = project.body
-  $('#body-summary').textContent = [width, depth, height].map(format).join(' × ')
-  $('#lid-summary').textContent = project.lid.lip > 0 ? 'Inset lip' : 'Flat'
-  $('#cutouts-summary').textContent = String(project.cutouts.length)
-  $('#mounts-summary').textContent = project.mounts.enabled ? '4 posts' : 'Off'
-}
-
-function setIssues(issues) {
-  const fields = new Set(issues.map(({ field }) => field))
-  nameInput.setAttribute('aria-invalid', String(fields.has('name')))
-  for (const input of document.querySelectorAll('[data-field]')) {
-    input.setAttribute('aria-invalid', String(fields.has(input.dataset.field)))
-  }
-  for (const section of document.querySelectorAll('.parameter-section')) {
-    section.classList.toggle('has-issue', Boolean(section.querySelector('[aria-invalid="true"]')))
-  }
-  showNotice(issues.map(({ message }) => message).join(' '))
-}
-
 function setReady(ready) {
   saveButton.disabled = !ready
   exportButton.disabled = !ready
@@ -182,23 +79,50 @@ function saveLocally() {
   }
 }
 
-function commitModel(model) {
+function setView(mode) {
+  viewMode = mode
+  for (const button of viewButtons) button.setAttribute('aria-pressed', String(button.dataset.view === mode))
+  preview?.setMode(mode)
+}
+
+function setPartOptions({ hasUpper, baseLabel, upperLabel }) {
+  $('[data-view="base"]').textContent = baseLabel
+  $('[data-view="upper"]').textContent = upperLabel
+  for (const button of viewButtons) button.hidden = !hasUpper && button.dataset.view !== 'base'
+  $('[data-export="base"] strong').textContent = baseLabel
+  $('[data-export="upper"] strong').textContent = upperLabel
+  $('[data-export="both"] strong').textContent = upperLabel === 'Lid' ? 'Base and lid' : 'Both halves'
+  $('[data-export="upper"]').hidden = !hasUpper
+  $('[data-export="both"]').hidden = !hasUpper
+  setView(hasUpper ? viewMode : 'base')
+}
+
+function commitModel(model, root) {
   currentModel = model
-  currentProject = structuredClone(project)
-  preview?.setModel(model, currentProject)
-  const { body, lid } = currentProject
-  $('#size-value').textContent = [body.width, body.depth, body.height + lid.thickness].map((value) => numberFormat.format(value)).join(' × ') + ' mm'
+  lastResolvedRoot = root
+  setPartOptions(model.layout)
+  preview?.setModel(model)
+  const { width, depth, height } = model.layout
+  $('#size-value').textContent = [width, depth, height].map((value) => numberFormat.format(value)).join(' × ') + ' mm'
   if (preview) previewMessage.hidden = true
   saveLocally()
   setReady(true)
 }
 
+function applyEvaluation(evaluation) {
+  const { issues } = evaluation
+  inspector.applyEvaluation(evaluation)
+  nameInput.setAttribute('aria-invalid', String(issues.some(({ field }) => field === 'name')))
+  const tail = issues.length > 3 ? ' ' + (issues.length - 3) + ' more fields need attention.' : ''
+  showNotice(issues.slice(0, 3).map(({ message }) => message).join(' ') + tail)
+}
+
 function updateModel() {
-  const issues = validateProject(project)
-  setIssues(issues)
-  if (issues.length) {
+  const evaluation = evaluateProject(project)
+  applyEvaluation(evaluation)
+  if (evaluation.issues.length) {
     status('Unapplied changes', 'error')
-    if (!currentModel && geometry) previewMessage.textContent = 'Fix the highlighted parameters to preview the enclosure.'
+    if (!currentModel && geometry && preview) previewMessage.textContent = 'Fix the highlighted settings to preview the enclosure.'
     return
   }
   if (!geometry) {
@@ -206,28 +130,35 @@ function updateModel() {
     return
   }
   try {
-    commitModel(buildEnclosure(geometry, project))
+    commitModel(buildEnclosure(geometry, evaluation.root), evaluation.root)
   } catch (error) {
     showNotice(error.message)
     status('Unapplied changes', 'error')
+    if (!currentModel && preview) previewMessage.textContent = 'Adjust the project to generate a solid enclosure.'
   }
 }
 
 function scheduleUpdate() {
-  updateSummaries()
   setReady(false)
   if (geometry) status('Updating model…', 'pending')
   clearTimeout(modelTimer)
   modelTimer = setTimeout(updateModel, 105)
 }
 
-function replaceProject(nextProject, nextModel) {
+function replaceProject(nextProject, evaluated, nextModel) {
   clearTimeout(modelTimer)
   project = nextProject
-  renderForm()
-  setIssues([])
-  if (nextModel) commitModel(nextModel)
-  else scheduleUpdate()
+  lastResolvedRoot = undefined
+  viewMode = 'exploded'
+  nameInput.value = project.name
+  inspector.reset()
+  showNotice('')
+  if (nextModel) {
+    applyEvaluation(evaluated)
+    commitModel(nextModel, evaluated.root)
+  } else {
+    scheduleUpdate()
+  }
 }
 
 function download(contents, name, type) {
@@ -243,15 +174,22 @@ function projectFilename() {
   return project.name.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '') || 'enclosure'
 }
 
+const inspector = createInspector(() => project, () => {
+  const evaluated = evaluateProject(project)
+  return evaluated.issues.length ? lastResolvedRoot : evaluated.root
+}, scheduleUpdate)
+
 addIcons(document)
-renderForm()
+inspector.reset()
+nameInput.value = project.name
 setReady(false)
+if (restoreError) showNotice('The saved project could not be loaded. The example is open.')
 
 try {
   preview = createPreview($('#scene'), $('#axes'))
 } catch {
   previewMessage.textContent = '3D preview needs WebGL. You can still edit and export this project.'
-  for (const button of document.querySelectorAll('[data-view], .viewport-tools button')) button.disabled = true
+  for (const button of [...viewButtons, ...document.querySelectorAll('.viewport-tools button')]) button.disabled = true
 }
 
 initGeometry(wasmURL).then((module) => {
@@ -266,41 +204,8 @@ initGeometry(wasmURL).then((module) => {
   previewMessage.textContent = 'The geometry engine could not load. Reload the page to try again.'
 })
 
-document.querySelector('.parameters').addEventListener('input', (event) => {
-  const control = event.target
-  if (control === mountToggle) {
-    project.mounts.enabled = control.checked
-  } else if (control.dataset.field) {
-    const [group, field, key] = control.dataset.field.split('.')
-    const value = control.type === 'number' ? control.valueAsNumber : control.value
-    if (group === 'cutouts') {
-      const cutout = project.cutouts[Number(field)]
-      cutout[key] = value
-      if (key === 'shape') {
-        if (value === 'Circle' && (!Number.isFinite(cutout.height) || cutout.height < 1 || cutout.height > 200)) {
-          cutout.height = 8
-        }
-        renderCutouts()
-        cutoutList.querySelector('[data-field="' + control.dataset.field + '"]').focus()
-      }
-    } else {
-      project[group][field] = value
-    }
-  } else {
-    return
-  }
-  scheduleUpdate()
-})
-
 nameInput.addEventListener('input', () => {
   project.name = nameInput.value
-  scheduleUpdate()
-})
-
-addCutoutButton.addEventListener('click', () => {
-  project.cutouts.push(makeCutout(currentProject?.body ?? defaultProject().body, project.cutouts))
-  renderCutouts()
-  cutoutList.lastElementChild.querySelector('select').focus()
   scheduleUpdate()
 })
 
@@ -312,8 +217,9 @@ fileInput.addEventListener('change', async () => {
   try {
     if (file.size > 128 * 1024) throw new Error('Choose a project JSON file smaller than 128 KB.')
     const nextProject = parseProject(await file.text())
-    const nextModel = geometry ? buildEnclosure(geometry, nextProject) : null
-    replaceProject(nextProject, nextModel)
+    const evaluated = evaluateProject(nextProject)
+    const nextModel = geometry ? buildEnclosure(geometry, evaluated.root) : null
+    replaceProject(nextProject, evaluated, nextModel)
     notify('Project opened')
   } catch (error) {
     showNotice(error.message || 'The project file could not be opened.')
@@ -329,19 +235,15 @@ exportOptions.addEventListener('click', (event) => {
   const option = event.target.closest('[data-export]')
   if (!option || exportButton.disabled) return
   const part = option.dataset.export
-  const contents = enclosureSTL(currentModel, part, currentProject.body.width)
-  download(contents, projectFilename() + '-' + part + '.stl', 'model/stl')
+  const label = option.querySelector('strong').textContent
+  const suffix = part === 'both' ? part : label.toLowerCase().replaceAll(' ', '-')
+  const contents = enclosureSTL(currentModel, part)
+  download(contents, projectFilename() + '-' + suffix + '.stl', 'model/stl')
   exportOptions.hidePopover()
-  notify(option.querySelector('strong').textContent + ' STL downloaded')
+  notify(label + ' STL downloaded')
 })
 
-for (const button of document.querySelectorAll('[data-view]')) {
-  button.addEventListener('click', () => {
-    $('[data-view][aria-pressed="true"]').setAttribute('aria-pressed', 'false')
-    button.setAttribute('aria-pressed', 'true')
-    preview?.setMode(button.dataset.view)
-  })
-}
+for (const button of viewButtons) button.addEventListener('click', () => setView(button.dataset.view))
 $('#reset-camera').addEventListener('click', () => preview?.resetCamera())
 $('#toggle-grid').addEventListener('click', (event) => {
   const button = event.currentTarget
@@ -357,4 +259,19 @@ $('#reset-project').addEventListener('click', () => {
 })
 resetDialog.addEventListener('close', () => {
   if (resetDialog.returnValue === 'reset') replaceProject(defaultProject())
+})
+
+const newDialog = $('#new-dialog')
+const newType = $('#new-type')
+const newLid = $('#new-has-lid')
+$('#new-project').addEventListener('click', () => {
+  newDialog.returnValue = 'cancel'
+  newType.value = 'lidded'
+  newLid.checked = true
+  $('#new-lid-row').hidden = false
+  newDialog.showModal()
+})
+newType.addEventListener('change', () => { $('#new-lid-row').hidden = newType.value !== 'lidded' })
+newDialog.addEventListener('close', () => {
+  if (newDialog.returnValue === 'create') replaceProject(newProject(newType.value, newLid.checked))
 })

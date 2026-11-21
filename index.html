@@ -27,7 +27,7 @@
             </button>
             <div id="export-options" class="export-options" popover>
               <button type="button" data-export="base"><strong>Base</strong><small>Open side facing up</small></button>
-              <button type="button" data-export="lid"><strong>Lid</strong><small>Outside face on the print bed</small></button>
+              <button type="button" data-export="upper"><strong>Lid</strong><small>Outside face on the print bed</small></button>
               <button type="button" data-export="both"><strong>Base and lid</strong><small>One STL with parts side by side</small></button>
             </div>
           </div>
@@ -40,7 +40,7 @@
       <div class="page-intro">
         <div>
           <h1>Enclosure designer</h1>
-          <p>Size your case, place cutouts, and get it ready to print.</p>
+          <p>Build a case around your components and export it for printing.</p>
         </div>
         <div class="save-status" id="save-status" role="status"><span data-icon="drive"></span><span id="save-status-text">Starting editor…</span></div>
       </div>
@@ -51,60 +51,26 @@
       </div>
 
       <div class="workbench">
-        <section class="panel parameters" aria-labelledby="parameters-title">
+        <section class="panel parameters" aria-labelledby="objects-title">
           <div class="panel-header parameter-header">
-            <h2 id="parameters-title"><span data-icon="sliders"></span>Parameters</h2>
-            <span class="unit-label">mm</span>
+            <h2 id="objects-title"><span data-icon="layers"></span>Objects</h2>
+            <button type="button" class="button button-quiet button-small" id="new-project"><span data-icon="plus"></span>New enclosure</button>
           </div>
-
-          <details class="parameter-section" open>
+          <nav id="object-tree" class="object-tree" aria-label="Object hierarchy"></nav>
+          <details class="parameter-section variables-section" id="variables-section">
             <summary>
-              <span class="section-icon" data-icon="box"></span><span>Body</span>
-              <span class="section-summary" id="body-summary"></span><span class="chevron" data-icon="chevron"></span>
-            </summary>
-            <div id="body-fields" class="fields"></div>
-          </details>
-
-          <details class="parameter-section" open>
-            <summary>
-              <span class="section-icon" data-icon="layers"></span><span>Lid</span>
-              <span class="section-summary" id="lid-summary"></span><span class="chevron" data-icon="chevron"></span>
+              <span class="section-icon" data-icon="formula"></span><span>Project variables</span>
+              <span class="section-summary" id="variables-count"></span><span class="chevron" data-icon="chevron"></span>
             </summary>
             <div class="section-content">
-              <div id="lid-fields" class="fields"></div>
-              <p class="field-hint">Clearance is the gap on each side of the lip. Set lip depth to 0 for a flat lid.</p>
+              <p class="field-hint">Use names like <code>boardWidth</code> in any dimensional field. Formulas can reference other variables.</p>
+              <div id="variable-list"></div>
+              <button type="button" id="add-variable" class="button add-item"><span data-icon="plus"></span>Add variable</button>
             </div>
           </details>
-
-          <details class="parameter-section" id="cutout-section">
-            <summary>
-              <span class="section-icon" data-icon="scissors"></span><span>Cutouts</span>
-              <span class="section-summary" id="cutouts-summary"></span><span class="chevron" data-icon="chevron"></span>
-            </summary>
-            <div class="section-content cutout-content">
-              <p class="field-hint">Offsets start at the wall midpoint. Positive offsets follow X on the front and back, and Y on the left and right.</p>
-              <div id="cutout-list"></div>
-              <button type="button" id="add-cutout" class="button add-cutout"><span data-icon="plus"></span>Add cutout</button>
-            </div>
-          </details>
-
-          <details class="parameter-section" id="mount-section">
-            <summary>
-              <span class="section-icon" data-icon="bolt"></span><span>Mounting</span>
-              <span class="section-summary" id="mounts-summary"></span><span class="chevron" data-icon="chevron"></span>
-            </summary>
-            <div class="section-content">
-              <label class="toggle-row" for="mounts-enabled">
-                <span>Four PCB mounting posts</span>
-                <input type="checkbox" id="mounts-enabled" role="switch">
-              </label>
-              <div id="mount-fields" class="fields"></div>
-              <p id="mount-hint" class="field-hint">Post height starts at the inside floor. Pilot holes stop at the floor.</p>
-            </div>
-          </details>
-
+          <div id="object-inspector"></div>
           <div class="parameter-footer">
-            <button type="button" class="button button-quiet" id="reset-project"><span data-icon="restart"></span>Reset to defaults</button>
+            <button type="button" class="button button-quiet" id="reset-project"><span data-icon="restart"></span>Reset to example</button>
           </div>
         </section>
 
@@ -115,7 +81,7 @@
               <button type="button" data-view="exploded" aria-pressed="true">Exploded</button>
               <button type="button" data-view="assembled" aria-pressed="false">Assembled</button>
               <button type="button" data-view="base" aria-pressed="false">Base</button>
-              <button type="button" data-view="lid" aria-pressed="false">Lid</button>
+              <button type="button" data-view="upper" aria-pressed="false">Lid</button>
             </div>
           </div>
           <div id="viewport" class="viewport">
@@ -137,6 +103,29 @@
       </div>
     </main>
 
+    <dialog id="new-dialog" aria-labelledby="new-title">
+      <form method="dialog">
+        <h2 id="new-title">New enclosure</h2>
+        <p>This replaces the current workspace. Use Save JSON to keep a copy first.</p>
+        <label class="field new-type">
+          <span>Enclosure type</span>
+          <span class="select-input">
+            <select id="new-type" autofocus>
+              <option value="lidded">Lidded enclosure</option>
+              <option value="split">Split enclosure</option>
+            </select>
+            <span aria-hidden="true" data-icon="chevron"></span>
+          </span>
+        </label>
+        <label class="toggle-row new-lid" id="new-lid-row">
+          <span>Include a lid</span><input type="checkbox" id="new-has-lid" role="switch" checked>
+        </label>
+        <div class="dialog-actions">
+          <button type="submit" class="button" value="cancel">Cancel</button>
+          <button type="submit" class="button button-primary" value="create">Create enclosure</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="reset-dialog">
       <form method="dialog">
         <h2>Reset this project?</h2>

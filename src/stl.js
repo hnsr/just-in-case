@@ -1,10 +1,11 @@
-export function enclosureSTL(model, part, width) {
-  const gap = 8
+export function enclosureSTL(model, part) {
+  const separation = (model.layout.width + 8) / 2
   const parts = {
     base: [[model.base, 0]],
-    lid: [[model.lid, 0]],
-    both: [[model.base, -(width + gap) / 2], [model.lid, (width + gap) / 2]],
+    upper: [[model.upper, 0]],
+    both: [[model.base, -separation], [model.upper, separation]],
   }[part]
+  if (!parts || parts.some(([mesh]) => !mesh)) throw new Error('This project does not have the requested parts.')
   const triangleCount = parts.reduce((sum, [mesh]) => sum + mesh.triangles.length / 3, 0)
   const buffer = new ArrayBuffer(84 + 50 * triangleCount)
   const view = new DataView(buffer)

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildEnclosure, initGeometry } from '../src/geometry.js'
-import { defaultProject, parseProject, projectJSON, validateProject } from '../src/project.js'
+import { defaultProject, evaluateProject, makeChild, makeFeature, newProject, parseProject, projectJSON } from '../src/project.js'
+import { makePrimitive } from '../src/definitions.js'
 import { enclosureSTL } from '../src/stl.js'
 
 const geometry = await initGeometry()
@@ -44,12 +45,21 @@ function inspectSTL(buffer) {
   return { min: min.map(snap), max: max.map(snap), volume, triangleCount }
 }
 
-test('the default base and lid export as closed mm meshes oriented on the print bed', () => {
-  const project = defaultProject()
-  const model = buildEnclosure(geometry, project)
-  const base = inspectSTL(enclosureSTL(model, 'base', project.body.width))
-  const lid = inspectSTL(enclosureSTL(model, 'lid', project.body.width))
-  const both = inspectSTL(enclosureSTL(model, 'both', project.body.width))
+function build(project) {
+  const { root, issues } = evaluateProject(project)
+  if (issues.length) throw new Error(issues[0].message)
+  return buildEnclosure(geometry, root)
+}
+
+function cutout(side, shape, width, height, offset, z) {
+  return { type: 'cutout', properties: { side, shape }, parameters: { width, height, offset, z } }
+}
+
+test('the default base and lid export as closed meshes on the print bed', () => {
+  const model = build(defaultProject())
+  const base = inspectSTL(enclosureSTL(model, 'base'))
+  const lid = inspectSTL(enclosureSTL(model, 'upper'))
+  const both = inspectSTL(enclosureSTL(model, 'both'))
   assert.deepEqual(base.min, [-50, -35, 0])
   assert.deepEqual(base.max, [50, 35, 30])
   assert.deepEqual(lid.min, [-50, -35, 0])
@@ -59,50 +69,183 @@ test('the default base and lid export as closed mm meshes oriented on the print 
   assert.equal(both.triangleCount, base.triangleCount + lid.triangleCount)
 })
 
-test('ports on all four walls remove material and mounts add material', () => {
-  const project = defaultProject()
-  project.body.radius = 0
-  project.lid.lip = 0
-  project.cutouts = []
-  project.mounts.enabled = false
-  const baseVolume = () => inspectSTL(enclosureSTL(buildEnclosure(geometry, project), 'base', project.body.width)).volume
-  const noFeatures = baseVolume()
+test('ports on all four walls remove material and screw posts add it', () => {
+  const project = newProject()
+  project.root.parameters.radius = 0
+  project.root.parameters.lip = 0
+  const baseVolume = () => inspectSTL(enclosureSTL(build(project), 'base')).volume
   for (const [side, shape] of [['Front', 'Rectangle'], ['Right', 'Circle'], ['Back', 'Rectangle'], ['Left', 'Circle']]) {
     const before = baseVolume()
-    project.cutouts.push({ side, shape, width: 8, height: 5, offset: 8, z: 12 })
+    project.root.features.push(cutout(side, shape, 8, 5, 8, 12))
     assert(baseVolume() < before - 90, side + ' port must cut through its wall')
   }
   const portsOnly = baseVolume()
-  project.mounts.enabled = true
+  project.root.features.push(makeFeature('screw-posts', project.root))
   assert(baseVolume() > portsOnly)
-  const flatLid = inspectSTL(enclosureSTL(buildEnclosure(geometry, project), 'lid', project.body.width))
-  assert.deepEqual(flatLid.max, [50, 35, 2.4])
-  assert(noFeatures > portsOnly)
+  assert.deepEqual(inspectSTL(enclosureSTL(build(project), 'upper')).max, [50, 35, 2.4])
 })
 
-test('project JSON round-trips all parameters and rejects invalid or incompatible projects', () => {
-  const project = defaultProject()
-  project.name = 'Board prototype'
-  project.body.width = 112.2
-  project.lid.clearance = 0.375
-  project.mounts.enabled = false
-  assert.deepEqual(parseProject(projectJSON(project)), project)
-  assert.deepEqual(validateProject(project), [])
-
-  project.cutouts[0].z = 2
-  assert(validateProject(project).some(({ field }) => field === 'cutouts.0.z'))
-  assert.throws(() => parseProject(projectJSON(project)), /above the floor/)
-  assert.throws(() => buildEnclosure(geometry, project), /above the floor/)
-  assert.throws(() => parseProject('{"version":2}'), /version 1/)
+test('v1 JSON migrates to the editable hierarchy and preserves both print meshes', () => {
+  const source = {
+    version: 1,
+    name: 'Old electronics enclosure',
+    body: { width: 100, depth: 70, height: 30, wall: 2.4, floor: 2.4, radius: 5 },
+    lid: { thickness: 2.4, lip: 3.2, clearance: 0.25 },
+    cutouts: [
+      { side: 'Front', shape: 'Rectangle', width: 16, height: 8, offset: -21, z: 12 },
+      { side: 'Right', shape: 'Circle', width: 11, height: 8, offset: 9, z: 14 },
+    ],
+    mounts: { enabled: true, height: 6, diameter: 7, hole: 2.7, inset: 12 },
+  }
+  const migrated = parseProject(JSON.stringify(source))
+  assert.equal(migrated.version, 2)
+  assert.equal(migrated.name, source.name)
+  assert.deepEqual(migrated.root, defaultProject().root)
+  assert.deepEqual(parseProject(projectJSON(migrated)), migrated)
+  assert.deepEqual(enclosureSTL(build(migrated), 'both'), enclosureSTL(build(defaultProject()), 'both'))
+  source.mounts.enabled = false
+  assert.equal(parseProject(JSON.stringify(source)).root.features.length, 2)
+  assert.throws(() => parseProject('{"version":3}'), /version 1 or 2/)
   assert.throws(() => parseProject('['), /valid JSON/)
 })
 
-test('cutouts that touch at a point are caught before export', () => {
+test('split halves stay closed and a seam cutout subtracts from both', () => {
+  const project = newProject('split')
+  project.root.parameters.seam = 14
+  const before = build(project)
+  project.root.features.push(cutout('Right', 'Circle', 8, 8, 12, 14))
+  const model = build(project)
+  const base = inspectSTL(enclosureSTL(model, 'base'))
+  const upper = inspectSTL(enclosureSTL(model, 'upper'))
+  assert.deepEqual(base.min, [-50, -35, 0])
+  assert.deepEqual(base.max, [50, 35, 14])
+  assert.deepEqual(upper.min, [-50, -35, 0])
+  assert.deepEqual(upper.max, [50, 35, 21.6])
+  assert(base.volume < inspectSTL(enclosureSTL(before, 'base')).volume)
+  assert(upper.volume < inspectSTL(enclosureSTL(before, 'upper')).volume)
+})
+
+test('a lidded enclosure can be instantiated as a base-only project', () => {
+  const project = newProject('lidded', false)
+  const model = build(parseProject(projectJSON(project)))
+  assert.equal(model.upper, null)
+  assert.deepEqual(inspectSTL(enclosureSTL(model, 'base')).max, [50, 35, 30])
+  assert.throws(() => enclosureSTL(model, 'both'), /requested parts/)
+})
+
+test('press-fit clips join the selected part and a cut repeater makes holes', () => {
+  const project = newProject('split')
+  const initial = build(project)
+  const pcb = makeChild('pcb-mount')
+  pcb.placement.part = 'upper'
+  project.root.children.push(pcb)
+  const mounted = build(project)
+  assert(inspectSTL(enclosureSTL(mounted, 'upper')).volume > inspectSTL(enclosureSTL(initial, 'upper')).volume)
+  assert.deepEqual(mounted.base.triangles, initial.base.triangles)
+  const repeated = makeChild('repeater', 'cut')
+  repeated.parameters.count = 3
+  repeated.parameters.stepX = 12
+  project.root.children.push(repeated)
+  const cut = build(project)
+  const removed = inspectSTL(enclosureSTL(mounted, 'base')).volume - inspectSTL(enclosureSTL(cut, 'base')).volume
+  assert(Math.abs(removed - 3 * Math.PI * 2.5 ** 2 * 2.4) < 1)
+  assert.deepEqual(parseProject(projectJSON(project)), project)
+})
+
+test('nested placements inherit rotation and position from the parent', () => {
+  const project = newProject()
+  const parent = makeChild('repeater')
+  parent.parameters.count = 1
+  parent.placement = { part: 'base', x: 13, y: -7, z: 0, angle: 90 }
+  const child = makeChild('repeater', 'add', false)
+  child.parameters.count = 1
+  child.parameters.primitive = makePrimitive('box')
+  child.parameters.primitive.parameters = { width: 4, depth: 2, height: 2 }
+  child.placement.x = 4
+  parent.children.push(child)
+  project.root.children.push(parent)
+
+  const { vertices, stride } = build(project).base
+  const vertexNear = (x, y, z) => {
+    for (let i = 0; i < vertices.length; i += stride) {
+      if (Math.hypot(vertices[i] - x, vertices[i + 1] - y, vertices[i + 2] - z) < 0.001) return true
+    }
+    return false
+  }
+  assert(vertexNear(12, -1, 4.35))
+  assert(!vertexNear(19, -8, 4.35))
+})
+
+test('individual repeats can translate and rotate a primitive', () => {
+  const project = newProject()
+  const pattern = makeChild('repeater')
+  Object.assign(pattern.parameters, { count: 2, stepX: 12, turnZ: 90 })
+  pattern.parameters.primitive.parameters = { width: 8, depth: 2, height: 3 }
+  project.root.children.push(pattern)
+  const { vertices, stride } = build(project).base
+  const extents = [[], []]
+  for (let i = 0; i < vertices.length; i += stride) {
+    if (Math.abs(vertices[i + 2] - 5.35) < 0.001) {
+      const copy = vertices[i] < -9 ? 0 : 1
+      extents[copy].push(Math.abs(vertices[i + 1]))
+    }
+  }
+  assert.deepEqual(extents.map((axis) => Math.max(...axis)), [1, 4])
+  pattern.parameters.primitive = makePrimitive('sphere')
+  inspectSTL(enclosureSTL(build(project), 'base'))
+})
+
+test('formulas resolve variables across object, feature, primitive, and placement parameters', () => {
   const project = defaultProject()
-  project.cutouts = [0, 8].map((offset) => ({
-    side: 'Front', shape: 'Circle', width: 8, height: 8, offset, z: 12,
-  }))
-  assert.throws(() => buildEnclosure(geometry, project), /shared edge/)
-  project.cutouts[1].offset = 7
-  assert.doesNotThrow(() => buildEnclosure(geometry, project))
+  project.variables = [{ name: 'caseWidth', value: 'board + 2 * wall' }, { name: 'board', value: 90 }, { name: 'wall', value: 5 }]
+  project.root.parameters.width = '= caseWidth'
+  project.root.features[0].parameters.width = '2^3 * wall / 2'
+  const child = makeChild('repeater')
+  child.placement.x = '-(caseWidth / 5)'
+  child.parameters.count = '10 % 3'
+  child.parameters.primitive.parameters.height = 'wall'
+  project.root.children.push(child)
+  const { root, issues } = evaluateProject(project)
+  assert.deepEqual(issues, [])
+  assert.equal(root.parameters.width, 100)
+  assert.equal(root.features[0].parameters.width, 20)
+  assert.equal(root.children[0].placement.x, -20)
+  assert.equal(root.children[0].parameters.count, 1)
+  assert.equal(root.children[0].parameters.primitive.parameters.height, 5)
+  assert.equal(parseProject(projectJSON(project)).root.parameters.width, '= caseWidth')
+  assert.doesNotThrow(() => build(project))
+
+  project.variables[1].value = 'caseWidth'
+  assert(evaluateProject(project).issues.some(({ message }) => /Circular reference/.test(message)))
+  project.variables[1].value = 'missing + 1'
+  assert(evaluateProject(project).issues.some(({ message }) => /Unknown variable/.test(message)))
+  project.variables[1].value = '1/0'
+  assert.throws(() => parseProject(projectJSON(project)), /Division by zero/)
+  project.variables[1].value = '1; alert(1)'
+  assert.throws(() => parseProject(projectJSON(project)), /Unexpected token/)
+})
+
+test('bad placements, kissing cutouts, and colliding parts are rejected before export', () => {
+  const project = defaultProject()
+  project.root.features = [0, 8].map((offset) => cutout('Front', 'Circle', 8, 8, offset, 12))
+  assert.throws(() => build(project), /shared edge/)
+  project.root.features[1].parameters.offset = 7
+  assert.doesNotThrow(() => build(project))
+
+  const object = makeChild('repeater')
+  object.placement.z = 2
+  project.root.children.push(object)
+  assert.throws(() => build(project), /disconnected/)
+  object.placement.z = 0
+  object.placement.x = -50
+  assert.throws(() => build(project), /outside the assembled case/)
+
+  const split = newProject('split')
+  const base = makeChild('repeater')
+  const upper = makeChild('repeater')
+  base.parameters.primitive.parameters.height = 18
+  upper.parameters.primitive.parameters.height = 18
+  upper.placement.part = 'upper'
+  split.root.children.push(base, upper)
+  assert.throws(() => build(split), /intersect when assembled/)
 })

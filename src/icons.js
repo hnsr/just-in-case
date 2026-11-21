@@ -20,6 +20,7 @@ const paths = {
   grid: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 12h16M12 4v16"/>',
   ruler: '<path d="m3 16 13-13 5 5L8 21l-5-5Zm8-8 2 2m1-5 2 2m-8 4 2 2m-5 1 2 2"/>',
   mouse: '<rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 7v4"/>',
+  formula: '<path d="M18 4H6l6 8-6 8h12m0-16v3m0 10v3"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
 }
 

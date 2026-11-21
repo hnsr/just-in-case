@@ -130,7 +130,8 @@ export function createPreview(container, axisCanvas) {
   const shadow = contactShadow()
   scene.add(grid, shadow)
 
-  let project
+  let model
+  let visibleHeight = 30
   let mode = 'exploded'
   let frame
 
@@ -147,11 +148,10 @@ export function createPreview(container, axisCanvas) {
 
   function resize() {
     const aspect = Math.max(container.clientWidth, 1) / Math.max(container.clientHeight, 1)
-    const width = project?.body.width ?? 100
-    const depth = project?.body.depth ?? 70
-    const height = project?.body.height ?? 30
+    const width = model?.layout.width ?? 100
+    const depth = model?.layout.depth ?? 70
     const widest = Math.hypot(width, depth)
-    const span = Math.max(widest * 0.68, widest * 0.67 / aspect, height * 0.95)
+    const span = Math.max(widest * 0.68, widest * 0.67 / aspect, visibleHeight * 0.67)
     camera.left = -span * aspect
     camera.right = span * aspect
     camera.top = span
@@ -162,24 +162,25 @@ export function createPreview(container, axisCanvas) {
   }
 
   function arrange() {
-    if (!project) return
-    const { body, lid: top } = project
-    const gap = Math.max(13, Math.min(39, Math.min(body.width, body.depth) * 0.36))
+    if (!model) return
+    const { width, depth, height, hasUpper } = model.layout
+    const gap = Math.max(13, Math.min(39, Math.min(width, depth) * 0.36))
     const previousTarget = controls.target.y
-    base.group.visible = mode !== 'lid'
-    lid.group.visible = mode !== 'base'
-    const isolated = mode === 'lid'
-    // The exported lid sits face down. Flip it upright for both assembly views.
+    const isolated = mode === 'upper'
+    base.group.visible = !hasUpper || !isolated
+    lid.group.visible = Boolean(hasUpper && mode !== 'base')
+    // The upper part is face-down in its STL and in the isolated view.
     lid.group.rotation.x = isolated ? 0 : Math.PI
-    lid.group.position.y = isolated ? 0 : body.height + top.thickness + (mode === 'exploded' ? gap : 0)
-    const highest = isolated ? top.thickness + top.lip : mode === 'base' ? body.height : lid.group.position.y
-    controls.target.y = highest * 0.48
+    lid.group.position.y = isolated ? 0 : height + (mode === 'exploded' ? gap : 0)
+    visibleHeight = !hasUpper || mode === 'base' ? model.base.height
+      : isolated ? model.upper.height : lid.group.position.y
+    controls.target.y = visibleHeight * 0.48
     camera.position.y += controls.target.y - previousTarget
-    const gridStep = Math.max(0.5, Math.ceil(Math.max(body.width, body.depth) / 120))
+    const gridStep = Math.max(0.5, Math.ceil(Math.max(width, depth) / 120))
     grid.scale.setScalar(gridStep)
-    shadow.scale.set(body.width * 1.5, body.depth * 1.65, 1)
+    shadow.scale.set(width * 1.5, depth * 1.65, 1)
     controls.update()
-    draw()
+    resize()
   }
 
   function resetCamera() {
@@ -215,11 +216,10 @@ export function createPreview(container, axisCanvas) {
   resize()
 
   return {
-    setModel(model, parameters) {
-      project = parameters
+    setModel(nextModel) {
+      model = nextModel
       base.set(model.base)
-      lid.set(model.lid)
-      resize()
+      if (model.upper) lid.set(model.upper)
       arrange()
     },
     setMode(nextMode) {
