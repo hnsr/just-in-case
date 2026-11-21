@@ -21,6 +21,17 @@ export const ROOT_TYPES = {
 }
 
 export const CHILD_TYPES = {
+  'pcb-screw-mount': {
+    label: 'PCB screw mounts', icon: 'bolt',
+    fields: {
+      pitchX: mm('X hole spacing', 32, 2, 400),
+      pitchY: mm('Y hole spacing', 24, 2, 400),
+      height: mm('Post height', 6, 1, 60),
+      diameter: mm('Post diameter', 7, 2, 30),
+      pilotDiameter: mm('Pilot hole diameter', 2.7, 0.5, 12),
+      pilotDepth: mm('Pilot hole depth', 5, 0.5, 60),
+    },
+  },
   'pcb-mount': {
     label: 'PCB press-fit mounts', icon: 'bolt',
     fields: {
@@ -48,6 +59,11 @@ export const CHILD_TYPES = {
   },
 }
 
+export const REPEATER_OPERATIONS = {
+  add: { label: 'Add material', treeLabel: 'Add' },
+  cut: { label: 'Cut material', treeLabel: 'Cut' },
+}
+
 export const PLACEMENT_FIELDS = {
   x: mm('X offset', 0, -400, 400),
   y: mm('Y offset', 0, -400, 400),
@@ -71,19 +87,38 @@ export const FEATURES = {
       z: mm('Center from enclosure bottom', 12, 0, 200),
     },
   },
-  'screw-posts': {
-    label: 'Four screw posts', icon: 'bolt',
+  'screw-closure': {
+    label: 'Screw closure', icon: 'bolt',
     fields: {
-      height: mm('Post height', 6, 1, 60),
-      diameter: mm('Post diameter', 7, 2, 20),
-      hole: mm('Pilot hole diameter', 2.7, 0.5, 12),
-      inset: mm('Inset from outside', 12, 2, 100),
+      insetX: mm('X inset from outside', 12, 2, 200),
+      insetY: mm('Y inset from outside', 12, 2, 200),
+      diameter: mm('Boss diameter', 8, 2, 30),
+      pilotDiameter: mm('Pilot hole diameter', 2.7, 0.5, 12),
+      pilotDepth: mm('Pilot hole depth', 7, 0.5, 60),
+      clearanceDiameter: mm('Lid hole diameter', 3.4, 0.8, 16),
+      counterboreDepth: mm('Counterbore depth', 0, 0, 12),
+      counterboreDiameter: mm('Counterbore diameter', 6.2, 2, 30),
     },
   },
 }
 
 export const SIDES = ['Front', 'Right', 'Back', 'Left']
 export const SHAPES = ['Rectangle', 'Circle']
+export const SCREW_LAYOUTS = { corners: 'Four corners', custom: 'Custom positions' }
+export const SCREW_POSITION_FIELDS = { x: mm('X position', 0, -200, 200), y: mm('Y position', 0, -200, 200) }
+
+export function supportsScrewClosure(root) {
+  return root.type === 'lidded' && root.properties.includeLid
+}
+
+export function rectangleCorners(x, y) {
+  return [{ x, y }, { x: -x, y }, { x: -x, y: -y }, { x, y: -y }]
+}
+
+export function screwPositions(body, feature) {
+  const { insetX, insetY, positions } = feature.parameters
+  return feature.properties.layout === 'custom' ? positions : rectangleCorners(body.width / 2 - insetX, body.depth / 2 - insetY)
+}
 
 export function parameterFields(object) {
   if (object.type === 'lidded') return object.properties.includeLid ? { ...body, ...closure } : body
@@ -100,6 +135,10 @@ export function parameterFields(object) {
 }
 
 export function featureFields(feature) {
+  if (feature.type === 'screw-closure' && feature.properties.layout === 'custom') {
+    const { insetX, insetY, ...shared } = FEATURES['screw-closure'].fields
+    return shared
+  }
   if (feature.type !== 'cutout' || feature.properties.shape !== 'Circle') return FEATURES[feature.type].fields
   const { width, offset, z } = FEATURES.cutout.fields
   return { width: { ...width, label: 'Diameter' }, offset, z }

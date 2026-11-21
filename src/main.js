@@ -18,6 +18,7 @@ const saveButton = $('#save-project')
 const exportButton = $('#export-button')
 const exportOptions = $('#export-options')
 const previewMessage = $('#preview-message')
+const bananaToggle = $('#banana-for-scale')
 const notices = $('#notice')
 const toast = $('#toast')
 const viewButtons = [...document.querySelectorAll('[data-view]')]
@@ -201,8 +202,10 @@ try {
   preview = createPreview($('#scene'), $('#axes'))
 } catch {
   previewMessage.textContent = '3D preview needs WebGL. You can still edit and export this project.'
-  for (const button of [...viewButtons, ...document.querySelectorAll('.viewport-tools button')]) button.disabled = true
+  for (const control of [...viewButtons, ...document.querySelectorAll('.viewport-tools button'), bananaToggle]) control.disabled = true
 }
+preview?.setBananaVisible(bananaToggle.checked)
+bananaToggle.addEventListener('change', () => preview?.setBananaVisible(bananaToggle.checked))
 
 initGeometry(wasmURL).then((module) => {
   geometry = module

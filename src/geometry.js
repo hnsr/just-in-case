@@ -1,5 +1,5 @@
 import createManifold from 'manifold-3d'
-import { enclosureLayout, lidRimWidth } from './definitions.js'
+import { enclosureLayout, lidRimWidth, rectangleCorners, screwPositions } from './definitions.js'
 
 const ARC_STEPS = 16
 const BOOLEAN_OVERLAP = 0.05
@@ -54,6 +54,7 @@ export function buildEnclosure({ Manifold }, root) {
   const layout = enclosureLayout(root)
   const owned = []
   const objectSources = new Map()
+  const cutters = new Map()
   const own = (solid) => {
     owned.push(solid)
     return solid
@@ -93,14 +94,46 @@ export function buildEnclosure({ Manifold }, root) {
     return move(rotate(cylinder(length, width / 2, 64), horizontal ? [90, 0, 0] : [0, 90, 0]), position)
   }
 
-  function screwPosts({ height, diameter, hole, inset }, adds, cuts) {
-    const x = p.width / 2 - inset
-    const y = p.depth / 2 - inset
-    for (const [px, py] of [[x, y], [-x, y], [-x, -y], [x, -y]]) {
-      adds.push(move(cylinder(height + BOOLEAN_OVERLAP, diameter / 2, 64),
-        [px, py, p.floor + (height - BOOLEAN_OVERLAP) / 2]))
-      cuts.push(move(cylinder(height + BOOLEAN_OVERLAP, hole / 2, 64),
-        [px, py, p.floor + (height + BOOLEAN_OVERLAP) / 2]))
+  function verticalCylinder({ x, y }, bottom, top, radius, path) {
+    const solid = cylinder(top - bottom, radius, 64)
+    if (path) trackSource(solid, path)
+    return move(solid, [x, y, (bottom + top) / 2])
+  }
+
+  function screwPosts(positions, { diameter, pilotDiameter, pilotDepth }, bottom, top, path) {
+    const posts = positions.map((position) => verticalCylinder(position, bottom, top, diameter / 2, path))
+    const pilots = positions.map((position) => verticalCylinder(position, top - pilotDepth, top + BOOLEAN_OVERLAP, pilotDiameter / 2, path))
+    return { posts, pilots }
+  }
+
+  function pcbScrewMount(parameters, path) {
+    const { pitchX, pitchY, height } = parameters
+    const { posts, pilots } = screwPosts(rectangleCorners(pitchX / 2, pitchY / 2), parameters, -BOOLEAN_OVERLAP, height, path)
+    return subtract(own(Manifold.union(posts)), pilots)
+  }
+
+  function screwClosure(feature) {
+    const f = feature.parameters
+    const positions = screwPositions(p, feature)
+    // Lid print coordinates are reflected in Y when the lid is flipped onto the base.
+    const lidPositions = positions.map(({ x, y }) => ({ x, y: -y }))
+    const { posts, pilots } = screwPosts(positions, f, p.floor - BOOLEAN_OVERLAP, p.height)
+    const lidHoles = lidPositions.map((position) =>
+      verticalCylinder(position, -BOOLEAN_OVERLAP, p.thickness + BOOLEAN_OVERLAP, f.clearanceDiameter / 2))
+    if (f.counterboreDepth > 0) {
+      lidHoles.push(...lidPositions.map((position) =>
+        verticalCylinder(position, -BOOLEAN_OVERLAP, f.counterboreDepth, f.counterboreDiameter / 2)))
+    }
+    const headDiameter = f.counterboreDepth > 0 ? f.counterboreDiameter : f.clearanceDiameter
+    const baseFootprint = own(Manifold.union(positions.map((position) => verticalCylinder(position, 0, p.height, f.diameter / 2))))
+    const lidFootprint = own(Manifold.union(lidPositions.map((position) =>
+      verticalCylinder(position, 0, p.thickness, Math.max(headDiameter, f.diameter) / 2))))
+    return { posts, pilots, lidHoles, baseFootprint, lidFootprint }
+  }
+
+  function checkScrewClearance(footprint, shapes, part) {
+    if (shapes.some((shape) => own(footprint.intersect(shape)).volume() > 0.005)) {
+      throw new Error('Screw closure overlaps another object or cut on the ' + part + '. Move the screw positions or the other geometry.')
     }
   }
 
@@ -140,23 +173,40 @@ export function buildEnclosure({ Manifold }, root) {
     return own(Manifold.union(copies))
   }
 
-  function childGeometry(object, path, surface) {
-    const solid = object.type === 'repeater' ? repeat(object.parameters, path) : pressFit(object.parameters, path)
-    const groups = childGroups(object.children, path)
-    const result = subtract(union(solid, groups.adds), groups.cuts)
+  function childGeometry(object, path, { part, surface, toPart }) {
     const { x, y, z, angle } = object.placement
-    return move(rotate(result, [0, 0, angle]), [x, y, z + surface])
+    const place = (solid) => move(rotate(solid, [0, 0, angle]), [x, y, z + surface])
+    let solid
+    if (object.type === 'repeater') solid = repeat(object.parameters, path)
+    else if (object.type === 'pcb-screw-mount') solid = pcbScrewMount(object.parameters, path)
+    else solid = pressFit(object.parameters, path)
+    const groups = childGroups(object.children, path, { part, toPart: (child) => toPart(place(child)) })
+    return place(subtract(union(solid, groups.adds), groups.cuts))
   }
 
-  function childGroups(children, path, surface = 0, part) {
+  function childGroups(children, path, { part, surface = 0, toPart = (solid) => solid }) {
     const adds = []
     const cuts = []
     children.forEach((object, index) => {
-      if (part && object.placement.part !== part) return
-      const result = childGeometry(object, path + '.children.' + index, surface)
+      if (path === 'root' && object.placement.part !== part) return
+      const key = path + '.children.' + index
+      const overlap = path === 'root' && object.type !== 'pcb-screw-mount' ? BOOLEAN_OVERLAP : 0
+      const result = childGeometry(object, key, { part, surface: surface - overlap, toPart })
       const cutting = object.properties.operation === 'cut'
       if (result.status() !== 'NoError' || (!cutting && result.isEmpty())) {
         throw new Error(object.name + ' could not be made into usable geometry.')
+      }
+      if (cutting && !result.isEmpty()) {
+        // Capture the full cutter in its part's coordinates before the parent subtracts it.
+        const { vertProperties, triVerts, numProp, mergeFromVert, mergeToVert } = toPart(result).getMesh()
+        const triangles = new Uint32Array(triVerts)
+        if (mergeFromVert.length) {
+          const merged = new Map(Array.from(mergeFromVert, (from, index) => [from, mergeToVert[index]]))
+          for (let i = 0; i < triangles.length; i++) {
+            triangles[i] = merged.get(triangles[i]) ?? triangles[i]
+          }
+        }
+        cutters.set(key, { part, vertices: new Float32Array(vertProperties), triangles, stride: numProp })
       }
       const collection = cutting ? cuts : adds
       collection.push(result)
@@ -210,14 +260,18 @@ export function buildEnclosure({ Manifold }, root) {
 
   try {
     const openings = root.features.filter(({ type }) => type === 'cutout').map(opening)
-    const baseChildren = childGroups(root.children, 'root', p.floor - BOOLEAN_OVERLAP, 'base')
+    const baseChildren = childGroups(root.children, 'root', { part: 'base', surface: p.floor })
     ensureInside(baseChildren.adds, layout.height - (layout.hasUpper ? p.thickness : 0), layout.baseLabel)
-    for (const feature of root.features) {
-      if (feature.type === 'screw-posts') screwPosts(feature.parameters, baseChildren.adds, baseChildren.cuts)
+    const closureFeature = root.features.find(({ type }) => type === 'screw-closure')
+    const closure = closureFeature ? screwClosure(closureFeature) : null
+    if (closure) {
+      checkScrewClearance(closure.baseFootprint, [...baseChildren.adds, ...baseChildren.cuts], 'base')
+      baseChildren.adds.push(...closure.posts)
+      baseChildren.cuts.push(...closure.pilots)
     }
     const base = subtract(union(tray(layout.baseHeight, p.floor), baseChildren.adds), [...openings, ...baseChildren.cuts])
     const baseMesh = mesh(base, layout.baseLabel)
-    if (!layout.hasUpper) return { base: baseMesh, upper: null, layout }
+    if (!layout.hasUpper) return { base: baseMesh, upper: null, layout, cutters }
 
     let upper = root.type === 'split' ? tray(layout.upperHeight, p.thickness) : prism(0, p.thickness)
     if (p.lip > 0) {
@@ -236,15 +290,21 @@ export function buildEnclosure({ Manifold }, root) {
         upper = union(upper, [shoulder])
       }
     }
-    const upperChildren = childGroups(root.children, 'root', p.thickness - BOOLEAN_OVERLAP, 'upper')
+    const upperChildren = childGroups(root.children, 'root', { part: 'upper', surface: p.thickness })
     ensureInside(upperChildren.adds, layout.height - p.floor, layout.upperLabel)
+    if (closure) {
+      checkScrewClearance(closure.lidFootprint, [...upperChildren.adds, ...upperChildren.cuts], 'lid')
+      // A lid-side object can reach into the space filled by a base boss.
+      checkScrewClearance(flipUpper(closure.baseFootprint), upperChildren.adds, 'lid')
+      upperChildren.cuts.push(...closure.lidHoles)
+    }
     if (root.type === 'split') upperChildren.cuts.push(...openings.map(flipUpper))
     upper = subtract(union(upper, upperChildren.adds), upperChildren.cuts)
     const upperMesh = mesh(upper, layout.upperLabel)
     if (own(base.intersect(flipUpper(upper))).volume() > 0.005) {
       throw new Error('The parts intersect when assembled. Check the lip dimensions and any objects near the mating edge.')
     }
-    return { base: baseMesh, upper: upperMesh, layout }
+    return { base: baseMesh, upper: upperMesh, layout, cutters }
   } finally {
     for (const solid of owned.reverse()) solid.delete()
   }

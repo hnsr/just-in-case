@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { createBanana } from './banana.js'
+import { createCutterOutline } from './cutter-outline.js'
 
 const initialAngle = new THREE.Vector3(0.96, 0.76, 1.28).normalize()
 const axes = [
@@ -9,17 +11,18 @@ const axes = [
 ]
 
 // Convert the model’s Z-up coordinates to the viewer’s Y-up coordinates.
-function toGeometry({ vertices, triangles, stride }) {
+function toGeometry({ vertices, triangles, stride }, includeNormals = true) {
   const position = new Float32Array(vertices.length / stride * 3)
-  const normal = new Float32Array(position.length)
+  const normal = includeNormals ? new Float32Array(position.length) : null
   for (let i = 0, j = 0; i < vertices.length; i += stride, j += 3) {
     position.set([vertices[i], vertices[i + 2], -vertices[i + 1]], j)
-    normal.set([vertices[i + 3], vertices[i + 5], -vertices[i + 4]], j)
+    if (normal) normal.set([vertices[i + 3], vertices[i + 5], -vertices[i + 4]], j)
   }
-  return new THREE.BufferGeometry()
+  const geometry = new THREE.BufferGeometry()
     .setAttribute('position', new THREE.BufferAttribute(position, 3))
-    .setAttribute('normal', new THREE.BufferAttribute(normal, 3))
     .setIndex(new THREE.BufferAttribute(triangles, 1))
+  if (normal) geometry.setAttribute('normal', new THREE.BufferAttribute(normal, 3))
+  return geometry
 }
 
 function partObject(color) {
@@ -166,6 +169,7 @@ export function createPreview(container, axisCanvas) {
   lighting(scene)
   const base = partObject(0xdf9137)
   const lid = partObject(0xf4aa49)
+  const cutterOutline = createCutterOutline()
   scene.add(base.group, lid.group)
 
   const grid = new THREE.GridHelper(400, 40, 0x5e5650, 0x343239)
@@ -177,13 +181,19 @@ export function createPreview(container, axisCanvas) {
 
   let model
   let selectedPath
+  let cutterBounds
+  let banana
+  let bananaShadow
   let visibleHeight = 30
+  let framingRadius = 0
+  let cameraDistance = 700
   let mode = 'exploded'
   let frame
 
   function render() {
     frame = undefined
     controls.update()
+    cutterOutline.update(camera, container.clientHeight * camera.zoom / (camera.top - camera.bottom))
     renderer.render(scene, camera)
     drawAxes(axisCanvas, camera)
   }
@@ -197,7 +207,7 @@ export function createPreview(container, axisCanvas) {
     const width = model?.layout.width ?? 100
     const depth = model?.layout.depth ?? 70
     const widest = Math.hypot(width, depth)
-    const span = Math.max(widest * 0.68, widest * 0.67 / aspect, visibleHeight * 0.67)
+    const span = Math.max(widest * 0.68, widest * 0.67 / aspect, visibleHeight * 0.67, framingRadius * 1.12 / Math.min(aspect, 1))
     camera.left = -span * aspect
     camera.right = span * aspect
     camera.top = span
@@ -207,11 +217,53 @@ export function createPreview(container, axisCanvas) {
     draw()
   }
 
+  function updateCutter() {
+    const cutter = model?.cutters.get(selectedPath)
+    if (!cutter) {
+      cutterBounds = cutterOutline.set()
+      cutterOutline.line.removeFromParent()
+      return
+    }
+    const geometry = toGeometry(cutter, false)
+    cutterBounds = cutterOutline.set(geometry)
+    geometry.dispose()
+    const part = cutter.part === 'base' ? base : lid
+    part.group.add(cutterOutline.line)
+  }
+
+  function aimCamera(width, depth) {
+    const target = new THREE.Vector3(0, visibleHeight * 0.48, 0)
+    framingRadius = 0
+    const referenceBounds = new THREE.Box3()
+    const part = cutterOutline.line.parent
+    if (cutterBounds && part?.visible) {
+      part.updateWorldMatrix(true, false)
+      referenceBounds.union(cutterBounds.clone().applyMatrix4(part.matrixWorld))
+    }
+    if (banana?.visible) {
+      referenceBounds.union(banana.geometry.boundingBox.clone().translate(banana.position))
+    }
+    if (!referenceBounds.isEmpty()) {
+      const enclosure = new THREE.Box3(
+        new THREE.Vector3(-width / 2, 0, -depth / 2),
+        new THREE.Vector3(width / 2, visibleHeight, depth / 2),
+      )
+      const padding = Math.max(width, depth, visibleHeight) * 0.1
+      if (!enclosure.clone().expandByScalar(padding).containsBox(referenceBounds)) {
+        enclosure.union(referenceBounds).getCenter(target)
+        framingRadius = enclosure.getSize(new THREE.Vector3()).length() / 2
+      }
+    }
+    cameraDistance = Math.max(700, framingRadius * 2)
+    camera.far = Math.max(8000, cameraDistance + framingRadius + 10)
+    camera.position.sub(controls.target).setLength(cameraDistance).add(target)
+    controls.target.copy(target)
+  }
+
   function arrange() {
     if (!model) return
     const { width, depth, height, hasUpper } = model.layout
     const gap = Math.max(13, Math.min(39, Math.min(width, depth) * 0.36))
-    const previousTarget = controls.target.y
     const isolated = mode === 'upper'
     base.group.visible = !hasUpper || !isolated
     lid.group.visible = Boolean(hasUpper && mode !== 'base')
@@ -220,8 +272,12 @@ export function createPreview(container, axisCanvas) {
     lid.group.position.y = isolated ? 0 : height + (mode === 'exploded' ? gap : 0)
     visibleHeight = !hasUpper || mode === 'base' ? model.base.height
       : isolated ? model.upper.height : lid.group.position.y
-    controls.target.y = visibleHeight * 0.48
-    camera.position.y += controls.target.y - previousTarget
+    if (banana?.visible) {
+      banana.position.set(-12, 0, depth / 2 + 14 - banana.geometry.boundingBox.min.z)
+      bananaShadow.position.x = banana.position.x
+      bananaShadow.position.z = banana.position.z
+    }
+    aimCamera(width, depth)
     const gridStep = Math.max(0.5, Math.ceil(Math.max(width, depth) / 120))
     grid.scale.setScalar(gridStep)
     shadow.scale.set(width * 1.5, depth * 1.65, 1)
@@ -230,7 +286,7 @@ export function createPreview(container, axisCanvas) {
   }
 
   function resetCamera() {
-    camera.position.copy(initialAngle).multiplyScalar(700).add(controls.target)
+    camera.position.copy(initialAngle).multiplyScalar(cameraDistance).add(controls.target)
     camera.zoom = 1
     camera.updateProjectionMatrix()
     controls.update()
@@ -267,6 +323,7 @@ export function createPreview(container, axisCanvas) {
       selectedPath = path
       base.set(model.base, selectedPath)
       if (model.upper) lid.set(model.upper, selectedPath)
+      updateCutter()
       arrange()
     },
     setSelection(path) {
@@ -274,7 +331,8 @@ export function createPreview(container, axisCanvas) {
       selectedPath = path
       base.select(path)
       lid.select(path)
-      draw()
+      updateCutter()
+      arrange()
     },
     setMode(nextMode) {
       mode = nextMode
@@ -284,6 +342,19 @@ export function createPreview(container, axisCanvas) {
     setGrid(visible) {
       grid.visible = visible
       draw()
+    },
+    setBananaVisible(visible) {
+      if (visible && !banana) {
+        banana = createBanana()
+        bananaShadow = shadow.clone()
+        const size = banana.geometry.boundingBox.getSize(new THREE.Vector3())
+        bananaShadow.scale.set(size.x * 1.24, size.z * 1.35, 1)
+        scene.add(banana, bananaShadow)
+      }
+      if (!banana) return
+      banana.visible = visible
+      bananaShadow.visible = visible
+      arrange()
     },
   }
 }

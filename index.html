@@ -74,8 +74,8 @@
           <div id="child-picker" class="child-picker" popover role="dialog" aria-labelledby="child-picker-title">
             <p id="child-picker-title">Add child object</p>
             <button type="button" data-child-type="pcb-mount" autofocus><span data-icon="bolt"></span>PCB press-fit mounts</button>
-            <button type="button" data-child-type="repeater" data-operation="add"><span data-icon="grid"></span>Geometry repeater · add</button>
-            <button type="button" data-child-type="repeater" data-operation="cut"><span data-icon="grid"></span>Geometry repeater · cut</button>
+            <button type="button" data-child-type="pcb-screw-mount"><span data-icon="bolt"></span>PCB screw mounts</button>
+            <button type="button" data-child-type="repeater"><span data-icon="grid"></span>Geometry repeater</button>
           </div>
           <div id="object-inspector"></div>
           <div class="parameter-footer">
@@ -106,6 +106,10 @@
             <div class="size-readout" title="Assembled width × depth × height">
               <span data-icon="ruler"></span><span id="size-value">—</span>
             </div>
+            <label class="preview-reference" title="Show a 180 mm reference banana">
+              <input type="checkbox" id="banana-for-scale" autocomplete="off">
+              <span>Banana for scale</span>
+            </label>
             <div class="preview-help"><span data-icon="mouse"></span><span>Drag to orbit · Scroll to zoom</span></div>
           </footer>
         </section>

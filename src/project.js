@@ -1,13 +1,15 @@
 import { evaluateFormula, VARIABLE_NAME } from './formula.js'
 import {
-  ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, PLACEMENT_FIELDS, SIDES, SHAPES,
-  enclosureLayout, featureFields, fieldDefaults, lidRimWidth, makePrimitive, parameterFields,
+  ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES,
+  SCREW_LAYOUTS, SCREW_POSITION_FIELDS, enclosureLayout, featureFields, fieldDefaults, lidRimWidth,
+  makePrimitive, parameterFields, screwPositions, supportsScrewClosure,
 } from './definitions.js'
 
 export const STORAGE_KEY = 'just-in-case.project.v2'
 export const LEGACY_STORAGE_KEY = 'just-in-case.project.v1'
 export const MAX_VARIABLES = 32
 export const MAX_FEATURES = 24
+export const MAX_SCREWS = 16
 export const MAX_OBJECTS = 40
 export const MAX_DEPTH = 6
 
@@ -17,26 +19,30 @@ export function newProject(type = 'lidded', includeLid = true) {
   return { version: 2, name: 'Electronics enclosure', variables: [], root }
 }
 
-export function makeChild(type, operation = 'add', direct = true) {
+export function makeChild(type, direct = true) {
   const object = {
     type,
     name: CHILD_TYPES[type].label,
-    properties: type === 'repeater' ? { operation } : {},
+    properties: type === 'repeater' ? { operation: 'add' } : {},
     parameters: fieldDefaults(CHILD_TYPES[type].fields),
     placement: { ...fieldDefaults(PLACEMENT_FIELDS), ...(direct ? { part: 'base' } : {}) },
     features: [],
     children: [],
   }
   if (type === 'repeater') {
-    object.parameters.primitive = makePrimitive(operation === 'cut' ? 'cylinder' : 'box')
+    object.parameters.primitive = makePrimitive('box')
     if (direct) object.placement.x = -15
-    if (operation === 'cut') object.placement.z = -3
   }
   return object
 }
 
 export function makeFeature(type, root) {
   const feature = { type, properties: {}, parameters: fieldDefaults(FEATURES[type].fields) }
+  if (type === 'screw-closure') {
+    feature.properties.layout = 'corners'
+    feature.parameters.pilotDepth = Math.min(feature.parameters.pilotDepth, root.parameters.height - root.parameters.floor)
+    return feature
+  }
   if (type !== 'cutout') return feature
 
   const p = root.parameters
@@ -68,8 +74,8 @@ export function defaultProject() {
   project.root.features = [
     { type: 'cutout', properties: { side: 'Front', shape: 'Rectangle' }, parameters: { width: 16, height: 8, offset: -21, z: 12 } },
     { type: 'cutout', properties: { side: 'Right', shape: 'Circle' }, parameters: { width: 11, offset: 9, z: 14 } },
-    makeFeature('screw-posts', project.root),
   ]
+  project.root.children.push(makeChild('pcb-screw-mount'))
   return project
 }
 
@@ -79,6 +85,17 @@ function record(value) {
 
 function demand(condition, message) {
   if (!condition) throw new Error(message)
+}
+
+function legacyScrewMount(body, { height, diameter, hole, inset }) {
+  function spacing(size) {
+    if (typeof size === 'number' && typeof inset === 'number') return size - 2 * inset
+    const formula = (value) => String(value).trim().replace(/^=\s*/, '')
+    return '(' + formula(size) + ') - 2 * (' + formula(inset) + ')'
+  }
+  const mount = makeChild('pcb-screw-mount')
+  mount.parameters = { pitchX: spacing(body.width), pitchY: spacing(body.depth), height, diameter, pilotDiameter: hole, pilotDepth: height }
+  return mount
 }
 
 function migrateV1(value) {
@@ -95,10 +112,63 @@ function migrateV1(value) {
     parameters: shape === 'Circle' ? { width, offset, z } : { width, height, offset, z },
   }))
   if (value.mounts.enabled) {
-    const { height, diameter, hole, inset } = value.mounts
-    project.root.features.push({ type: 'screw-posts', properties: {}, parameters: { height, diameter, hole, inset } })
+    project.root.children.push(legacyScrewMount(project.root.parameters, value.mounts))
   }
   return project
+}
+
+function roomAt({ x, y }, body, inset) {
+  const radius = Math.max(0, body.radius - inset)
+  const dx = Math.abs(x) - (body.width / 2 - inset - radius)
+  const dy = Math.abs(y) - (body.depth / 2 - inset - radius)
+  return radius - Math.hypot(Math.max(0, dx), Math.max(0, dy)) - Math.min(0, Math.max(dx, dy))
+}
+
+function validateScrewClosure(root, feature, path, mark) {
+  if (!supportsScrewClosure(root)) {
+    mark(path + '.properties.layout', 'Screw closure requires a lidded enclosure with a lid.')
+    return
+  }
+  const body = root.parameters
+  const f = feature.parameters
+  const issue = (key, message) => mark(path + '.parameters.' + key, message)
+  if (f.diameter < f.pilotDiameter + 1.2 || f.diameter <= f.clearanceDiameter) {
+    issue('diameter', 'The boss needs 0.6 mm around the pilot hole and must be wider than the lid hole.')
+  }
+  if (f.clearanceDiameter <= f.pilotDiameter) issue('clearanceDiameter', 'The lid hole must be wider than the pilot hole.')
+  if (f.pilotDepth > body.height - body.floor) issue('pilotDepth', 'The screw closure pilot must stop above the outside floor.')
+  if (f.counterboreDepth > 0) {
+    if (f.counterboreDepth > body.thickness - 0.7) issue('counterboreDepth', 'Leave at least 0.7 mm of lid below the counterbore.')
+    if (f.counterboreDiameter <= f.clearanceDiameter) issue('counterboreDiameter', 'The counterbore must be wider than the lid hole.')
+  }
+  if (feature.properties.layout === 'corners' && (f.insetX >= body.width / 2 || f.insetY >= body.depth / 2)) {
+    issue(f.insetX >= body.width / 2 ? 'insetX' : 'insetY', 'Keep the screw insets below half the corresponding enclosure dimension.')
+    return
+  }
+
+  const cavityInset = body.wall + (body.lip > 0 ? body.clearance + lidRimWidth(body) : 0)
+  const diameter = f.counterboreDepth > 0 ? Math.max(f.diameter, f.counterboreDiameter) : f.diameter
+  const positions = screwPositions(body, feature)
+  const cornerIssues = new Set()
+  positions.forEach((position, index) => {
+    const placementIssue = (message) => {
+      if (feature.properties.layout === 'custom') {
+        issue('positions.' + index + '.x', 'Screw ' + (index + 1) + ' ' + message)
+      } else {
+        cornerIssues.add(message)
+      }
+    }
+    if (roomAt(position, body, cavityInset) < f.diameter / 2 + 0.25) {
+      placementIssue('must clear the inner walls and any lid lip.')
+    }
+    if (f.counterboreDepth > 0 && roomAt(position, body, 0) < f.counterboreDiameter / 2 + 0.7) {
+      placementIssue('must leave material between the counterbore and the lid edge.')
+    }
+    if (positions.slice(0, index).some((other) => Math.hypot(other.x - position.x, other.y - position.y) < diameter + 0.5)) {
+      placementIssue('must have at least 0.5 mm between neighboring bosses and head recesses.')
+    }
+  })
+  for (const message of cornerIssues) issue('insetX', 'Corner screws ' + message)
 }
 
 function validateRoot(root, mark) {
@@ -118,30 +188,26 @@ function validateRoot(root, mark) {
     field('clearance', 'Reduce the wall thickness or clearance to leave room inside the lip.')
   }
 
+  let screwClosureSeen = false
   root.features.forEach((feature, index) => {
     const f = feature.parameters
-    const label = FEATURES[feature.type].label + ' ' + (index + 1)
-    const issue = (key, message) => mark('root.features.' + index + '.parameters.' + key, label + ' ' + message)
-    if (feature.type === 'cutout') {
-      const wallLength = ['Front', 'Back'].includes(feature.properties.side) ? p.width : p.depth
-      const openingHeight = feature.properties.shape === 'Circle' ? f.width : f.height
-      if (Math.abs(f.offset) + f.width / 2 > wallLength / 2 - Math.max(p.radius, p.wall) - 1) {
-        issue('offset', 'must fit on the straight wall with 1 mm of room at each end.')
-      }
-      if (f.z - openingHeight / 2 < p.floor + 0.5 || f.z + openingHeight / 2 > wallTop - 1) {
-        issue('z', 'needs 0.5 mm above the floor and 1 mm below the top of the wall.')
-      }
+    const path = 'root.features.' + index
+    if (feature.type === 'screw-closure') {
+      if (screwClosureSeen) mark(path + '.properties.layout', 'An enclosure can have only one screw closure.')
+      else validateScrewClosure(root, feature, path, mark)
+      screwClosureSeen = true
       return
     }
-    const postRadius = f.diameter / 2
-    const cavityRadius = Math.max(0, p.radius - p.wall)
-    const cornerOffset = cavityRadius - (f.inset - p.wall)
-    const wallGap = cavityRadius - (cornerOffset > 0 ? Math.SQRT2 * cornerOffset : cornerOffset)
-    if (narrowest / 2 - f.inset < postRadius + 0.25 || wallGap < postRadius + 0.25) {
-      issue('inset', 'need room between the posts and inner walls.')
+    const label = FEATURES[feature.type].label + ' ' + (index + 1)
+    const issue = (key, message) => mark('root.features.' + index + '.parameters.' + key, label + ' ' + message)
+    const wallLength = ['Front', 'Back'].includes(feature.properties.side) ? p.width : p.depth
+    const openingHeight = feature.properties.shape === 'Circle' ? f.width : f.height
+    if (Math.abs(f.offset) + f.width / 2 > wallLength / 2 - Math.max(p.radius, p.wall) - 1) {
+      issue('offset', 'must fit on the straight wall with 1 mm of room at each end.')
     }
-    if (f.hole + 1.2 > f.diameter) issue('hole', 'need at least 0.6 mm of material around each pilot hole.')
-    if (p.floor + f.height + lip + 0.5 > baseHeight) issue('height', 'must fit below the mating edge.')
+    if (f.z - openingHeight / 2 < p.floor + 0.5 || f.z + openingHeight / 2 > wallTop - 1) {
+      issue('z', 'needs 0.5 mm above the floor and 1 mm below the top of the wall.')
+    }
   })
 }
 
@@ -192,13 +258,23 @@ export function evaluateProject(project) {
   function visitFeature(feature, path) {
     demand(record(feature) && Object.hasOwn(FEATURES, feature.type) && record(feature.properties), 'This project contains an unknown feature.')
     const { type } = feature
-    let properties = {}
+    let properties
     if (type === 'cutout') {
       const { side, shape } = feature.properties
       demand(SIDES.includes(side) && SHAPES.includes(shape), 'A wall cutout is missing its wall or shape.')
       properties = { side, shape }
+    } else {
+      const { layout } = feature.properties
+      demand(Object.hasOwn(SCREW_LAYOUTS, layout), 'Choose a screw closure layout.')
+      properties = { layout }
     }
-    return { type, properties, parameters: fields(feature.parameters, featureFields(feature), path + '.parameters') }
+    const parameters = fields(feature.parameters, featureFields(feature), path + '.parameters')
+    if (properties.layout === 'custom') {
+      const { positions } = feature.parameters
+      demand(Array.isArray(positions) && positions.length >= 1 && positions.length <= MAX_SCREWS, 'A custom screw closure needs 1 to ' + MAX_SCREWS + ' positions.')
+      parameters.positions = positions.map((position, index) => fields(position, SCREW_POSITION_FIELDS, path + '.parameters.positions.' + index))
+    }
+    return { type, properties, parameters }
   }
 
   function visit(object, path, depth, hasUpper) {
@@ -216,7 +292,7 @@ export function evaluateProject(project) {
       next.properties.includeLid = object.properties.includeLid
     }
     if (type === 'repeater') {
-      demand(['add', 'cut'].includes(object.properties.operation), 'Choose whether the repeater adds or cuts material.')
+      demand(Object.hasOwn(REPEATER_OPERATIONS, object.properties.operation), 'Choose whether the repeater adds or cuts material.')
       next.properties.operation = object.properties.operation
     }
     next.parameters = fields(object.parameters, parameterFields(next), path + '.parameters')
@@ -243,6 +319,13 @@ export function evaluateProject(project) {
     }
     if (type === 'pcb-mount' && next.parameters.length > next.parameters.boardDepth / 2 - 0.5) {
       mark(path + '.parameters.length', 'Shorten the clips to leave room between each pair.')
+    }
+    if (type === 'pcb-screw-mount') {
+      const { pitchX, pitchY, diameter, height, pilotDiameter, pilotDepth } = next.parameters
+      if (pitchX < diameter + 0.5) mark(path + '.parameters.pitchX', 'Leave at least 0.5 mm between posts along X.')
+      if (pitchY < diameter + 0.5) mark(path + '.parameters.pitchY', 'Leave at least 0.5 mm between posts along Y.')
+      if (diameter < pilotDiameter + 1.2) mark(path + '.parameters.pilotDiameter', 'Leave at least 0.6 mm of material around each pilot hole.')
+      if (pilotDepth > height) mark(path + '.parameters.pilotDepth', 'The pilot hole must stop at or above the bottom of the post.')
     }
     if (root) hasUpper = type === 'split' || next.properties.includeLid
     next.features = object.features.map((feature, index) => visitFeature(feature, path + '.features.' + index))
@@ -288,6 +371,15 @@ export function parseProject(source) {
   }
   demand(record(value) && [1, 2].includes(value.version), 'Choose a Just in Case project with format version 1 or 2.')
   const project = value.version === 1 ? migrateV1(value) : value
+  const { root } = project
+  if (Array.isArray(root?.features) && Array.isArray(root.children)) {
+    root.features = root.features.filter((feature) => {
+      if (feature?.type !== 'screw-posts') return true
+      demand(record(root.parameters) && record(feature.parameters), 'The legacy screw posts are missing their dimensions.')
+      root.children.push(legacyScrewMount(root.parameters, feature.parameters))
+      return false
+    })
+  }
   const [issue] = evaluateProject(project).issues
   if (issue) throw new Error(issue.message)
   project.name = project.name.trim()

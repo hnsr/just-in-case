@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import * as THREE from 'three'
+import { createCutterOutline } from '../src/cutter-outline.js'
 import { buildEnclosure, initGeometry } from '../src/geometry.js'
 import { defaultProject, evaluateProject, makeChild, makeFeature, newProject, parseProject, projectJSON } from '../src/project.js'
 import { makePrimitive } from '../src/definitions.js'
@@ -55,6 +57,22 @@ function cutout(side, shape, width, height, offset, z) {
   return { type: 'cutout', properties: { side, shape }, parameters: { width, height, offset, z } }
 }
 
+function floorCutter() {
+  const cutter = makeChild('repeater')
+  cutter.properties.operation = 'cut'
+  cutter.parameters.primitive = makePrimitive('cylinder')
+  cutter.placement.z = -3
+  return cutter
+}
+
+function hasVertex(mesh, x, y, z) {
+  const { vertices, stride } = mesh
+  for (let i = 0; i < vertices.length; i += stride) {
+    if (Math.hypot(vertices[i] - x, vertices[i + 1] - y, vertices[i + 2] - z) < 0.001) return true
+  }
+  return false
+}
+
 test('the default base and lid export as closed meshes on the print bed', () => {
   const model = build(defaultProject())
   const base = inspectSTL(enclosureSTL(model, 'base'))
@@ -80,12 +98,12 @@ test('ports on all four walls remove material and screw posts add it', () => {
     assert(baseVolume() < before - 90, side + ' port must cut through its wall')
   }
   const portsOnly = baseVolume()
-  project.root.features.push(makeFeature('screw-posts', project.root))
+  project.root.children.push(makeChild('pcb-screw-mount'))
   assert(baseVolume() > portsOnly)
   assert.deepEqual(inspectSTL(enclosureSTL(build(project), 'upper')).max, [50, 35, 2.4])
 })
 
-test('v1 JSON migrates to the editable hierarchy and preserves both print meshes', () => {
+test('legacy screw posts open as a positioned PCB screw mount', () => {
   const source = {
     version: 1,
     name: 'Old electronics enclosure',
@@ -100,13 +118,89 @@ test('v1 JSON migrates to the editable hierarchy and preserves both print meshes
   const migrated = parseProject(JSON.stringify(source))
   assert.equal(migrated.version, 2)
   assert.equal(migrated.name, source.name)
-  assert.deepEqual(migrated.root, defaultProject().root)
+  assert.deepEqual(migrated.root.features, defaultProject().root.features)
+  const [mount] = migrated.root.children
+  assert.equal(mount.type, 'pcb-screw-mount')
+  assert.deepEqual(mount.parameters, { pitchX: 76, pitchY: 46, height: 6, diameter: 7, pilotDiameter: 2.7, pilotDepth: 6 })
   assert.deepEqual(parseProject(projectJSON(migrated)), migrated)
-  assert.deepEqual(enclosureSTL(build(migrated), 'both'), enclosureSTL(build(defaultProject()), 'both'))
+  const model = build(migrated)
+  assert(hasVertex(model.base, 38 + 3.5, 23, 8.4))
+  inspectSTL(enclosureSTL(model, 'both'))
   source.mounts.enabled = false
-  assert.equal(parseProject(JSON.stringify(source)).root.features.length, 2)
+  assert.equal(parseProject(JSON.stringify(source)).root.children.length, 0)
   assert.throws(() => parseProject('{"version":3}'), /version 1 or 2/)
   assert.throws(() => parseProject('['), /valid JSON/)
+})
+
+test('PCB screw mounts can be placed and rotated independently with blind pilot holes', () => {
+  const project = newProject()
+  const a = makeChild('pcb-screw-mount')
+  const b = makeChild('pcb-screw-mount')
+  Object.assign(a.parameters, { pitchX: 12, pitchY: 10, height: 5, pilotDepth: 3 })
+  Object.assign(b.parameters, { pitchX: 12, pitchY: 10 })
+  Object.assign(a.placement, { x: -22, angle: 90 })
+  Object.assign(b.placement, { x: 22, y: -3 })
+  project.root.children.push(a, b)
+  const model = build(project)
+  assert(hasVertex(model.base, -27 + 3.5, 6, 7.4), 'first post follows the rotated hole pattern')
+  assert(hasVertex(model.base, -27 + 1.35, 6, 4.4), 'the pilot stops above the floor')
+  assert(hasVertex(model.base, 28 + 3.5, 2, 8.4), 'second post retains its separate placement')
+  assert(model.base.runs.some(({ path }) => path === 'root.children.0'))
+  assert(model.base.runs.some(({ path }) => path === 'root.children.1'))
+  inspectSTL(enclosureSTL(model, 'base'))
+})
+
+test('screw closure pairs the base and lid at corner and asymmetric custom positions', () => {
+  const project = newProject()
+  const feature = makeFeature('screw-closure', project.root)
+  project.root.features.push(feature)
+  const corners = build(project)
+  for (const x of [-38, 38]) {
+    for (const y of [-23, 23]) {
+      assert(hasVertex(corners.base, x + 4, y, 30))
+      assert(hasVertex(corners.upper, x + 1.7, -y, 0))
+    }
+  }
+
+  feature.properties.layout = 'custom'
+  feature.parameters.positions = [{ x: -12, y: -16 }, { x: 23, y: 4 }]
+  feature.parameters.counterboreDepth = 1.2
+  const custom = build(parseProject(projectJSON(project)))
+  for (const { x, y } of feature.parameters.positions) {
+    assert(hasVertex(custom.base, x + 4, y, 30), 'the boss touches the inside lid plane')
+    assert(hasVertex(custom.base, x + 1.35, y, 23), 'the pilot ends at the configured depth')
+    assert(hasVertex(custom.upper, x + 1.7, -y, 2.4), 'the exit hole lines up in assembled coordinates')
+    assert(hasVertex(custom.upper, x + 3.1, -y, 0))
+    assert(hasVertex(custom.upper, x + 3.1, -y, 1.2), 'the counterbore opens on the outside face')
+  }
+  inspectSTL(enclosureSTL(custom, 'base'))
+  inspectSTL(enclosureSTL(custom, 'upper'))
+})
+
+test('screw closures reject duplicate features, unsupported roots, and obstructions', () => {
+  const project = newProject()
+  const feature = makeFeature('screw-closure', project.root)
+  project.root.features.push(feature, structuredClone(feature))
+  assert.throws(() => build(project), /only one screw closure/)
+  project.root.features.pop()
+  for (const unavailable of [newProject('split'), newProject('lidded', false)]) {
+    unavailable.root.features.push(structuredClone(feature))
+    assert.throws(() => build(unavailable), /requires a lidded enclosure with a lid/)
+  }
+  feature.parameters.insetX = 3
+  assert.throws(() => build(project), /must clear the inner walls/)
+  feature.parameters.insetX = 12
+  feature.parameters.counterboreDepth = 2
+  assert.throws(() => build(project), /material|below the counterbore/)
+  feature.parameters.counterboreDepth = 0
+
+  const obstruction = makeChild('repeater')
+  obstruction.parameters.count = 1
+  Object.assign(obstruction.placement, { x: 38, y: 23 })
+  project.root.children.push(obstruction)
+  assert.throws(() => build(project), /overlaps another object or cut on the base/)
+  Object.assign(obstruction.placement, { part: 'upper', y: -23 })
+  assert.throws(() => build(project), /overlaps another object or cut on the lid/)
 })
 
 test('split halves stay closed and a seam cutout subtracts from both', () => {
@@ -142,7 +236,7 @@ test('press-fit clips join the selected part and a cut repeater makes holes', ()
   const mounted = build(project)
   assert(inspectSTL(enclosureSTL(mounted, 'upper')).volume > inspectSTL(enclosureSTL(initial, 'upper')).volume)
   assert.deepEqual(mounted.base.triangles, initial.base.triangles)
-  const repeated = makeChild('repeater', 'cut')
+  const repeated = floorCutter()
   repeated.parameters.count = 3
   repeated.parameters.stepX = 12
   project.root.children.push(repeated)
@@ -157,7 +251,7 @@ test('nested placements inherit rotation and position from the parent', () => {
   const parent = makeChild('repeater')
   parent.parameters.count = 1
   parent.placement = { part: 'base', x: 13, y: -7, z: 0, angle: 90 }
-  const child = makeChild('repeater', 'add', false)
+  const child = makeChild('repeater', false)
   child.parameters.count = 1
   child.parameters.primitive = makePrimitive('box')
   child.parameters.primitive.parameters = { width: 4, depth: 2, height: 2 }
@@ -201,10 +295,10 @@ test('preview faces identify their object after nesting, cutting, and splitting 
   clip.placement.part = 'upper'
   const parent = makeChild('repeater')
   parent.placement.y = -9
-  const nested = makeChild('repeater', 'add', false)
+  const nested = makeChild('repeater', false)
   nested.placement.y = 20
   parent.children.push(nested)
-  project.root.children.push(clip, parent, makeChild('repeater', 'cut'))
+  project.root.children.push(clip, parent, floorCutter())
   const { base, upper } = build(project)
 
   function sourcePaths(mesh) {
@@ -231,6 +325,101 @@ test('preview faces identify their object after nesting, cutting, and splitting 
   }
 })
 
+test('a configured repeater can switch from adding to cutting without changing its pattern', () => {
+  const project = newProject()
+  const baseVolume = () => inspectSTL(enclosureSTL(build(project), 'base')).volume
+  const emptyVolume = baseVolume()
+  const repeater = makeChild('repeater')
+  repeater.placement.z = -1
+  project.root.children.push(repeater)
+  assert.equal(repeater.properties.operation, 'add')
+  assert(baseVolume() > emptyVolume)
+
+  const { parameters, placement } = structuredClone(repeater)
+  repeater.properties.operation = 'cut'
+  assert(baseVolume() < emptyVolume)
+  const saved = parseProject(projectJSON(project)).root.children[0]
+  assert.equal(saved.properties.operation, 'cut')
+  assert.deepEqual(saved.parameters, parameters)
+  assert.deepEqual(saved.placement, placement)
+})
+
+test('preview cutters retain their full shape and ancestor placement even when they miss material', () => {
+  const project = newProject()
+  const clean = build(project)
+  const outside = floorCutter()
+  outside.parameters.count = 2
+  outside.placement.x = 85
+  const extension = makeChild('repeater', false)
+  extension.parameters.count = 1
+  extension.placement.x = 12
+  outside.children.push(extension)
+  const bracket = makeChild('repeater')
+  bracket.parameters.count = 1
+  Object.assign(bracket.placement, { part: 'upper', x: 12, y: -8, angle: 90 })
+  const nested = makeChild('repeater', false)
+  nested.properties.operation = 'cut'
+  nested.parameters.count = 1
+  nested.parameters.primitive.parameters = { width: 2, depth: 1, height: 3 }
+  Object.assign(nested.placement, { x: 1, z: 3 })
+  bracket.children.push(nested)
+  project.root.children.push(outside, bracket)
+  const model = build(project)
+
+  function bounds({ vertices, stride }) {
+    return [0, 1, 2].map((axis) => {
+      const values = Array.from({ length: vertices.length / stride }, (_, i) => vertices[i * stride + axis])
+      return [Math.min(...values), Math.max(...values)].map((value) => Number(value.toFixed(3)))
+    })
+  }
+
+  const missedCutter = model.cutters.get('root.children.0')
+  assert.equal(missedCutter.part, 'base')
+  assert.deepEqual(bounds(missedCutter), [[82.5, 99.5], [-2.5, 2.5], [-0.65, 5.35]])
+  const cleanBase = inspectSTL(enclosureSTL(clean, 'base'))
+  const missedBase = inspectSTL(enclosureSTL(model, 'base'))
+  assert.deepEqual(missedBase.min, cleanBase.min)
+  assert.deepEqual(missedBase.max, cleanBase.max)
+  assert(Math.abs(missedBase.volume - cleanBase.volume) < 0.001)
+  assert(model.base.runs.every(({ path }) => path === 'root'))
+  const nestedCutter = model.cutters.get('root.children.1.children.0')
+  assert.equal(nestedCutter.part, 'upper')
+  assert.deepEqual(bounds(nestedCutter), [[11.5, 12.5], [-8, -6], [5.35, 8.35]])
+  assert.equal(model.cutters.size, 2)
+})
+
+test('cutter outlines draw box edges and update a smooth sphere silhouette as the camera orbits', () => {
+  const outline = createCutterOutline()
+  new THREE.Group().add(outline.line)
+  const camera = new THREE.OrthographicCamera()
+  const { Manifold } = geometry
+
+  function useSolid(solid) {
+    const { vertProperties, triVerts } = solid.getMesh()
+    solid.delete()
+    outline.set(new THREE.BufferGeometry()
+      .setAttribute('position', new THREE.BufferAttribute(vertProperties, 3))
+      .setIndex(new THREE.BufferAttribute(triVerts, 1)))
+  }
+
+  camera.position.set(2, 3, 5)
+  camera.lookAt(0, 0, 0)
+  useSolid(Manifold.cube([2, 2, 2]))
+  outline.update(camera, 3)
+  assert.equal(outline.line.geometry.drawRange.count, 24)
+
+  useSolid(Manifold.sphere(3, 24))
+  outline.update(camera, 3)
+  const { count } = outline.line.geometry.drawRange
+  const firstView = outline.line.geometry.attributes.position.array.slice(0, count * 3)
+  assert(count > 0 && count < 150)
+  camera.position.set(-5, 2, 3)
+  camera.lookAt(0, 0, 0)
+  outline.update(camera, 3)
+  const secondView = outline.line.geometry.attributes.position.array.slice(0, outline.line.geometry.drawRange.count * 3)
+  assert.notDeepEqual(secondView, firstView)
+})
+
 test('formulas resolve variables across object, feature, primitive, and placement parameters', () => {
   const project = defaultProject()
   project.variables = [{ name: 'caseWidth', value: 'board + 2 * wall' }, { name: 'board', value: 90 }, { name: 'wall', value: 5 }]
@@ -245,9 +434,10 @@ test('formulas resolve variables across object, feature, primitive, and placemen
   assert.deepEqual(issues, [])
   assert.equal(root.parameters.width, 100)
   assert.equal(root.features[0].parameters.width, 20)
-  assert.equal(root.children[0].placement.x, -20)
-  assert.equal(root.children[0].parameters.count, 1)
-  assert.equal(root.children[0].parameters.primitive.parameters.height, 5)
+  const resolvedChild = root.children.at(-1)
+  assert.equal(resolvedChild.placement.x, -20)
+  assert.equal(resolvedChild.parameters.count, 1)
+  assert.equal(resolvedChild.parameters.primitive.parameters.height, 5)
   assert.equal(parseProject(projectJSON(project)).root.parameters.width, '= caseWidth')
   assert.doesNotThrow(() => build(project))
 
