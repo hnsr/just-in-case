@@ -195,6 +195,42 @@ test('individual repeats can translate and rotate a primitive', () => {
   inspectSTL(enclosureSTL(build(project), 'base'))
 })
 
+test('preview faces identify their object after nesting, cutting, and splitting the parts', () => {
+  const project = newProject('split')
+  const clip = makeChild('pcb-mount')
+  clip.placement.part = 'upper'
+  const parent = makeChild('repeater')
+  parent.placement.y = -9
+  const nested = makeChild('repeater', 'add', false)
+  nested.placement.y = 20
+  parent.children.push(nested)
+  project.root.children.push(clip, parent, makeChild('repeater', 'cut'))
+  const { base, upper } = build(project)
+
+  function sourcePaths(mesh) {
+    let cursor = 0
+    const paths = new Set()
+    for (const { path, start, count } of mesh.runs) {
+      assert.equal(start, cursor)
+      assert(count > 0 && count % 3 === 0)
+      cursor += count
+      paths.add(path)
+    }
+    assert.equal(cursor, mesh.triangles.length)
+    return [...paths].sort()
+  }
+
+  assert.deepEqual(sourcePaths(base), ['root', 'root.children.1', 'root.children.1.children.0', 'root.children.2'])
+  assert.deepEqual(sourcePaths(upper), ['root', 'root.children.0'])
+  for (const { path, start, count } of base.runs) {
+    if (path !== 'root.children.2') continue
+    for (const index of base.triangles.subarray(start, start + count)) {
+      const z = base.vertices[index * base.stride + 2]
+      assert(z >= -0.001 && z <= project.root.parameters.floor + 0.001, 'cut faces belong to the floor holes')
+    }
+  }
+})
+
 test('formulas resolve variables across object, feature, primitive, and placement parameters', () => {
   const project = defaultProject()
   project.variables = [{ name: 'caseWidth', value: 'board + 2 * wall' }, { name: 'board', value: 90 }, { name: 'wall', value: 5 }]

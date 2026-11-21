@@ -99,13 +99,23 @@ function ownLabel(object) {
   return object.name?.trim() || (ROOT_TYPES[object.type] ?? CHILD_TYPES[object.type]).label
 }
 
-export function createInspector(getProject, getEvaluatedRoot, onChange) {
+function countDescendants(object) {
+  return object.children.reduce((total, child) => total + 1 + countDescendants(child), 0)
+}
+
+export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect) {
   const tree = $('#object-tree')
   const selected = $('#object-inspector')
+  const childPicker = $('#child-picker')
+  const removeDialog = $('#remove-object-dialog')
+  const variablesPanel = $('#variables-panel')
+  const variablesToggle = $('#variables-toggle')
   const list = $('#variable-list')
   const addVariable = $('#add-variable')
   const openSections = new Map()
   let path = 'root'
+  let childTarget
+  let pendingRemoval
 
   function disclosure(label, key, { glyph, summary, open = false } = {}) {
     const details = element('details', 'parameter-section')
@@ -122,40 +132,118 @@ export function createInspector(getProject, getEvaluatedRoot, onChange) {
     return { details, content }
   }
 
-  function renderTree(focus = false) {
-    function branch(object, key, depth) {
+  function positionChildPicker() {
+    if (!childTarget || !childPicker.matches(':popover-open')) return
+    const { top, bottom, right } = childTarget.trigger.getBoundingClientRect()
+    const { clientWidth, clientHeight } = document.documentElement
+    if (top >= clientHeight || bottom <= 0) {
+      childPicker.hidePopover()
+      return
+    }
+    const gap = 8
+    const maxTop = clientHeight - childPicker.offsetHeight - gap
+    const above = top - childPicker.offsetHeight - gap
+    const left = Math.min(right, clientWidth - gap) - childPicker.offsetWidth
+    childPicker.style.left = Math.max(gap, left) + 'px'
+    childPicker.style.top = Math.max(gap, bottom + gap <= maxTop ? bottom + gap : above >= gap ? above : maxTop) + 'px'
+  }
+
+  function openChildPicker(object, key, trigger) {
+    const sameTrigger = childTarget?.trigger === trigger
+    if (childPicker.matches(':popover-open')) childPicker.hidePopover()
+    if (sameTrigger) return
+    childTarget = { object, key, trigger }
+    trigger.setAttribute('aria-expanded', 'true')
+    trigger.focus({ preventScroll: true })
+    childPicker.showPopover({ source: trigger })
+    positionChildPicker()
+  }
+
+  function requestRemoval(object, key, parent) {
+    function remove() {
+      const index = parent.children.indexOf(object)
+      if (index < 0) return
+      const selection = path === key || path.startsWith(key + '.') ? parent : objectAt(getProject(), path)
+      parent.children.splice(index, 1)
+      renderTree(true, selection)
+      renderSelected()
+      onChange()
+    }
+
+    if (object.children.length === 0) {
+      remove()
+      return
+    }
+
+    const count = countDescendants(object)
+    const label = count === 1 ? 'nested object' : 'nested objects'
+    $('#remove-object-warning').textContent = '“' + ownLabel(object) + '” and ' + count + ' ' + label + ' will be removed from this project.'
+    pendingRemoval = remove
+    removeDialog.returnValue = 'cancel'
+    removeDialog.showModal()
+  }
+
+  function renderTree(focus = false, selection = objectAt(getProject(), path)) {
+    if (childPicker.matches(':popover-open')) childPicker.hidePopover()
+    const rootObject = getProject().root
+    const limitReached = countDescendants(rootObject) + 1 >= MAX_OBJECTS
+
+    function branch(object, key, depth, parent) {
       const detail = ROOT_TYPES[object.type] ?? CHILD_TYPES[object.type]
-      const row = button('', detail.icon, 'tree-row', () => {
-        path = key
-        renderTree(true)
+      const label = ownLabel(object)
+      const row = element('div', 'tree-row')
+      const choose = button('', detail.icon, 'tree-object', () => {
+        renderTree(true, object)
         renderSelected()
         applyEvaluation(lastEvaluation)
       })
-      row.append(element('span', 'tree-name', ownLabel(object)))
-      row.dataset.object = key
+      choose.append(element('span', 'tree-name', label))
+      choose.title = label
+      choose.dataset.object = key
       row.style.setProperty('--depth', depth)
-      if (key === path) row.setAttribute('aria-current', 'true')
+      if (object === selection) {
+        path = key
+        choose.setAttribute('aria-current', 'true')
+      }
+
+      const actions = element('div', 'tree-actions')
+      const add = button('', 'plus', 'icon-button tree-action', (event) => openChildPicker(object, key, event.currentTarget))
+      add.setAttribute('aria-label', 'Add child to ' + label)
+      add.setAttribute('aria-controls', childPicker.id)
+      add.setAttribute('aria-haspopup', 'dialog')
+      add.setAttribute('aria-expanded', 'false')
+      add.disabled = limitReached || depth >= MAX_DEPTH
+      add.title = add.disabled ? 'Object or nesting limit reached' : 'Add child object'
+      actions.append(add)
+      if (parent) {
+        const remove = button('', 'trash', 'icon-button tree-action tree-remove', () => requestRemoval(object, key, parent))
+        remove.setAttribute('aria-label', 'Remove ' + label)
+        remove.title = 'Remove object'
+        actions.append(remove)
+      }
+      row.append(choose, actions)
+
       const item = element('li')
       item.append(row)
       if (object.children.length) {
         const children = element('ul')
         object.children.forEach((child, index) => {
-          children.append(branch(child, key + '.children.' + index, depth + 1))
+          children.append(branch(child, key + '.children.' + index, depth + 1, object))
         })
         item.append(children)
       }
       return item
     }
     const root = element('ul')
-    root.append(branch(getProject().root, 'root', 0))
+    root.append(branch(rootObject, 'root', 0))
     tree.replaceChildren(root)
     addIcons(tree)
     if (focus) tree.querySelector('[aria-current="true"]').focus()
+    onSelect(selection)
   }
 
   function renderVariables() {
     const { variables } = getProject()
-    $('#variables-count').textContent = variables.length
     addVariable.disabled = variables.length >= MAX_VARIABLES
     list.replaceChildren(...variables.map((entry, index) => {
       const key = 'variables.' + index
@@ -222,6 +310,9 @@ export function createInspector(getProject, getEvaluatedRoot, onChange) {
     }
 
     const parameterPanel = disclosure('Parameters', path + '.parameters', { glyph: 'sliders', open: true })
+    const formulaHint = element('p', 'field-hint leading-hint', 'Formulas can use names defined in ')
+    formulaHint.append(element('strong', '', 'Variables'), '.')
+    parameterPanel.content.append(formulaHint)
     if (object.type === 'repeater') {
       const primitive = object.parameters.primitive
       const primitiveBox = element('div', 'primitive-box')
@@ -270,35 +361,6 @@ export function createInspector(getProject, getEvaluatedRoot, onChange) {
       selected.append(featurePanel.details)
     }
 
-    const childPanel = disclosure('Child objects', path + '.children', { glyph: 'layers', summary: String(object.children.length), open: true })
-    childPanel.content.append(picker('Add object', [
-      ['pcb-mount', CHILD_TYPES['pcb-mount'].label],
-      ['add', 'Geometry repeater · add'],
-      ['cut', 'Geometry repeater · cut'],
-    ], (choice) => {
-      const child = makeChild(choice === 'pcb-mount' ? choice : 'repeater', choice, isRoot)
-      const index = object.children.push(child) - 1
-      path += '.children.' + index
-      renderTree(true)
-      renderSelected()
-      onChange()
-    }, tree.querySelectorAll('[data-object]').length >= MAX_OBJECTS || depth >= MAX_DEPTH))
-    selected.append(childPanel.details)
-
-    if (!isRoot) {
-      const remove = button('Remove object', 'trash', 'button button-quiet button-small', () => {
-        const boundary = path.lastIndexOf('.children.')
-        const index = Number(path.slice(boundary + '.children.'.length))
-        path = path.slice(0, boundary)
-        objectAt(project, path).children.splice(index, 1)
-        renderTree(true)
-        renderSelected()
-        onChange()
-      })
-      const footer = element('div', 'inspector-footer')
-      footer.append(remove)
-      selected.append(footer)
-    }
     addIcons(selected)
   }
 
@@ -326,7 +388,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange) {
       renderSelected()
       selected.querySelector('[data-field="' + key + '"]')?.focus()
     }
-    if (key === path + '.name') tree.querySelector('[aria-current] .tree-name').textContent = ownLabel(objectAt(getProject(), path))
+    if (key === path + '.name') renderTree()
     if (key.startsWith('variables.') && fieldName === 'name') {
       control.closest('.variable-row').querySelector('button').setAttribute('aria-label', 'Remove variable ' + value)
     }
@@ -338,7 +400,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange) {
     if (!evaluation) return
     lastEvaluation = evaluation
     const errors = new Map(evaluation.issues.map((issue) => [issue.field, issue.message]))
-    for (const input of document.querySelectorAll('.parameters [data-field]')) {
+    for (const input of document.querySelectorAll('#object-inspector [data-field], #variable-list [data-field]')) {
       const key = input.dataset.field
       input.setAttribute('aria-invalid', String(errors.has(key)))
       if (errors.has(key)) input.title = errors.get(key)
@@ -354,13 +416,40 @@ export function createInspector(getProject, getEvaluatedRoot, onChange) {
       const prefix = row.dataset.object
       row.classList.toggle('has-issue', evaluation.issues.some(({ field }) => field.startsWith(prefix + '.')))
     }
-    for (const details of document.querySelectorAll('.parameters details')) {
-      const key = details.dataset.section ?? 'variables'
+    for (const details of selected.querySelectorAll('[data-section]')) {
+      const key = details.dataset.section
       details.classList.toggle('has-issue', evaluation.issues.some(({ field }) => field.startsWith(key + '.')))
     }
+    const variableError = evaluation.issues.some(({ field }) => field.startsWith('variables.'))
+    variablesToggle.classList.toggle('has-issue', variableError)
+    if (variableError) variablesToggle.setAttribute('aria-description', 'Some variables need attention.')
+    else variablesToggle.removeAttribute('aria-description')
   }
 
   selected.addEventListener('input', handleInput)
+  childPicker.addEventListener('beforetoggle', (event) => {
+    if (event.newState === 'closed') {
+      childTarget?.trigger.setAttribute('aria-expanded', 'false')
+      childTarget = undefined
+    }
+  })
+  childPicker.addEventListener('click', (event) => {
+    const choice = event.target.closest('[data-child-type]')
+    if (!choice || !childTarget) return
+    const { object, key } = childTarget
+    const child = makeChild(choice.dataset.childType, choice.dataset.operation, key === 'root')
+    object.children.push(child)
+    renderTree(true, child)
+    renderSelected()
+    onChange()
+  })
+  window.addEventListener('scroll', positionChildPicker, { passive: true })
+  window.addEventListener('resize', positionChildPicker)
+  removeDialog.addEventListener('close', () => {
+    const remove = pendingRemoval
+    pendingRemoval = undefined
+    if (removeDialog.returnValue === 'remove') remove?.()
+  })
   list.addEventListener('input', handleInput)
   addVariable.addEventListener('click', () => {
     const { variables } = getProject()
@@ -368,7 +457,9 @@ export function createInspector(getProject, getEvaluatedRoot, onChange) {
     while (variables.some(({ name }) => name === 'var' + number)) number++
     variables.push({ name: 'var' + number, value: 10 })
     renderVariables()
-    list.lastElementChild.querySelector('input').select()
+    const name = list.lastElementChild.querySelector('input')
+    name.focus()
+    name.select()
     onChange()
   })
 
@@ -377,7 +468,9 @@ export function createInspector(getProject, getEvaluatedRoot, onChange) {
       path = 'root'
       openSections.clear()
       lastEvaluation = undefined
-      $('#variables-section').open = false
+      pendingRemoval = undefined
+      if (removeDialog.open) removeDialog.close()
+      if (variablesPanel.matches(':popover-open')) variablesPanel.hidePopover()
       renderTree()
       renderVariables()
       renderSelected()

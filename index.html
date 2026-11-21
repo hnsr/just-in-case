@@ -14,9 +14,23 @@
           <div class="brand-mark" data-icon="brand"></div>
           <span>Just in Case</span>
         </div>
-        <div class="project-title">
-          <span data-icon="pencil"></span>
-          <input id="project-name" aria-label="Project name" maxlength="80" spellcheck="false">
+        <div class="project-controls">
+          <div class="project-title">
+            <span data-icon="pencil"></span>
+            <input id="project-name" aria-label="Project name" maxlength="80" spellcheck="false">
+          </div>
+          <button id="variables-toggle" class="button button-quiet" type="button" popovertarget="variables-panel" aria-haspopup="dialog">
+            <span data-icon="formula"></span>Variables
+          </button>
+          <div id="variables-panel" class="variables-panel" popover role="dialog" aria-labelledby="variables-title">
+            <div class="variables-header">
+              <h2 id="variables-title">Project variables</h2>
+              <button class="icon-button" type="button" popovertarget="variables-panel" popovertargetaction="hide" aria-label="Close variables" data-icon="close" autofocus></button>
+            </div>
+            <p class="field-hint">Define names for formulas like <code>boardWidth + 4</code>. Variables can reference each other.</p>
+            <div id="variable-list"></div>
+            <button type="button" id="add-variable" class="button add-item"><span data-icon="plus"></span>Add variable</button>
+          </div>
         </div>
         <div class="project-actions">
           <button id="open-project" class="button button-quiet" type="button"><span data-icon="folder"></span>Open JSON</button>
@@ -54,20 +68,15 @@
         <section class="panel parameters" aria-labelledby="objects-title">
           <div class="panel-header parameter-header">
             <h2 id="objects-title"><span data-icon="layers"></span>Objects</h2>
-            <button type="button" class="button button-quiet button-small" id="new-project"><span data-icon="plus"></span>New enclosure</button>
+            <button type="button" class="button button-quiet button-small" id="change-enclosure"><span data-icon="swap"></span>Change enclosure</button>
           </div>
           <nav id="object-tree" class="object-tree" aria-label="Object hierarchy"></nav>
-          <details class="parameter-section variables-section" id="variables-section">
-            <summary>
-              <span class="section-icon" data-icon="formula"></span><span>Project variables</span>
-              <span class="section-summary" id="variables-count"></span><span class="chevron" data-icon="chevron"></span>
-            </summary>
-            <div class="section-content">
-              <p class="field-hint">Use names like <code>boardWidth</code> in any dimensional field. Formulas can reference other variables.</p>
-              <div id="variable-list"></div>
-              <button type="button" id="add-variable" class="button add-item"><span data-icon="plus"></span>Add variable</button>
-            </div>
-          </details>
+          <div id="child-picker" class="child-picker" popover role="dialog" aria-labelledby="child-picker-title">
+            <p id="child-picker-title">Add child object</p>
+            <button type="button" data-child-type="pcb-mount" autofocus><span data-icon="bolt"></span>PCB press-fit mounts</button>
+            <button type="button" data-child-type="repeater" data-operation="add"><span data-icon="grid"></span>Geometry repeater · add</button>
+            <button type="button" data-child-type="repeater" data-operation="cut"><span data-icon="grid"></span>Geometry repeater · cut</button>
+          </div>
           <div id="object-inspector"></div>
           <div class="parameter-footer">
             <button type="button" class="button button-quiet" id="reset-project"><span data-icon="restart"></span>Reset to example</button>
@@ -103,26 +112,29 @@
       </div>
     </main>
 
-    <dialog id="new-dialog" aria-labelledby="new-title">
+    <dialog id="change-dialog" aria-labelledby="change-title" aria-describedby="change-warning">
       <form method="dialog">
-        <h2 id="new-title">New enclosure</h2>
-        <p>This replaces the current workspace. Use Save JSON to keep a copy first.</p>
-        <label class="field new-type">
+        <h2 id="change-title">Change enclosure</h2>
+        <p id="change-warning" class="dialog-warning">
+          <strong>This will reset your current project.</strong>
+          The project name and dimensions will return to their defaults, and all variables, features, and child objects will be cleared. To keep a copy, cancel and use Save JSON first.
+        </p>
+        <label class="field enclosure-type-field">
           <span>Enclosure type</span>
           <span class="select-input">
-            <select id="new-type" autofocus>
+            <select id="change-type">
               <option value="lidded">Lidded enclosure</option>
               <option value="split">Split enclosure</option>
             </select>
             <span aria-hidden="true" data-icon="chevron"></span>
           </span>
         </label>
-        <label class="toggle-row new-lid" id="new-lid-row">
-          <span>Include a lid</span><input type="checkbox" id="new-has-lid" role="switch" checked>
+        <label class="toggle-row enclosure-lid-field" id="change-lid-row">
+          <span>Include a lid</span><input type="checkbox" id="change-has-lid" role="switch" checked>
         </label>
         <div class="dialog-actions">
-          <button type="submit" class="button" value="cancel">Cancel</button>
-          <button type="submit" class="button button-primary" value="create">Create enclosure</button>
+          <button type="submit" class="button" value="cancel" autofocus>Cancel</button>
+          <button type="submit" class="button button-primary" value="reset">Change enclosure and reset</button>
         </div>
       </form>
     </dialog>
@@ -133,6 +145,16 @@
         <div class="dialog-actions">
           <button type="submit" class="button" value="cancel" autofocus>Cancel</button>
           <button type="submit" class="button button-primary" value="reset">Reset project</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="remove-object-dialog" aria-labelledby="remove-object-title" aria-describedby="remove-object-warning">
+      <form method="dialog">
+        <h2 id="remove-object-title">Remove object and its children?</h2>
+        <p id="remove-object-warning" class="dialog-warning"></p>
+        <div class="dialog-actions">
+          <button type="submit" class="button" value="cancel" autofocus>Cancel</button>
+          <button type="submit" class="button button-danger" value="remove">Remove objects</button>
         </div>
       </form>
     </dialog>

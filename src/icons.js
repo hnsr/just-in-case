@@ -13,6 +13,7 @@ const paths = {
   scissors: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M8 8l13 13M8 16 21 3"/>',
   bolt: '<path d="m8 3-4 4v7l4 4h8l4-4V7l-4-4H8Zm-4 8h16M9 18v3m6-3v3"/>',
   plus: '<path d="M12 5v14m-7-7h14"/>',
+  swap: '<path d="M4 8h16m-4-4 4 4-4 4M20 16H4m4-4-4 4 4 4"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14m-8 4v6m4-6v6"/>',
   restart: '<path d="M4 5v6h6M4.6 10a8 8 0 1 1 1.8 8.7"/>',
   cube: '<path d="m12 3 9 5v8l-9 5-9-5V8l9-5Zm0 0v9m9 4-9-4-9 4"/>',
@@ -21,6 +22,7 @@ const paths = {
   ruler: '<path d="m3 16 13-13 5 5L8 21l-5-5Zm8-8 2 2m1-5 2 2m-8 4 2 2m-5 1 2 2"/>',
   mouse: '<rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 7v4"/>',
   formula: '<path d="M18 4H6l6 8-6 8h12m0-16v3m0 10v3"/>',
+  close: '<path d="m6 6 12 12M18 6 6 18"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
 }
 

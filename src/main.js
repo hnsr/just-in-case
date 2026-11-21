@@ -27,6 +27,8 @@ let geometry
 let preview
 let currentModel
 let lastResolvedRoot
+let selectedObject
+let modelObjectPaths = new WeakMap()
 let modelTimer
 let toastTimer
 let restoreError = false
@@ -100,8 +102,15 @@ function setPartOptions({ hasUpper, baseLabel, upperLabel }) {
 function commitModel(model, root) {
   currentModel = model
   lastResolvedRoot = root
+  // Draft objects keep their identity even if their tree indices change before the next valid model.
+  modelObjectPaths = new WeakMap()
+  function rememberObject(object, path) {
+    modelObjectPaths.set(object, path)
+    object.children.forEach((child, index) => rememberObject(child, path + '.children.' + index))
+  }
+  rememberObject(project.root, 'root')
   setPartOptions(model.layout)
-  preview?.setModel(model)
+  preview?.setModel(model, modelObjectPaths.get(selectedObject))
   const { width, depth, height } = model.layout
   $('#size-value').textContent = [width, depth, height].map((value) => numberFormat.format(value)).join(' × ') + ' mm'
   if (preview) previewMessage.hidden = true
@@ -177,7 +186,10 @@ function projectFilename() {
 const inspector = createInspector(() => project, () => {
   const evaluated = evaluateProject(project)
   return evaluated.issues.length ? lastResolvedRoot : evaluated.root
-}, scheduleUpdate)
+}, scheduleUpdate, (object) => {
+  selectedObject = object
+  preview?.setSelection(modelObjectPaths.get(object))
+})
 
 addIcons(document)
 inspector.reset()
@@ -261,17 +273,18 @@ resetDialog.addEventListener('close', () => {
   if (resetDialog.returnValue === 'reset') replaceProject(defaultProject())
 })
 
-const newDialog = $('#new-dialog')
-const newType = $('#new-type')
-const newLid = $('#new-has-lid')
-$('#new-project').addEventListener('click', () => {
-  newDialog.returnValue = 'cancel'
-  newType.value = 'lidded'
-  newLid.checked = true
-  $('#new-lid-row').hidden = false
-  newDialog.showModal()
+const changeDialog = $('#change-dialog')
+const changeType = $('#change-type')
+const changeLid = $('#change-has-lid')
+const changeLidRow = $('#change-lid-row')
+$('#change-enclosure').addEventListener('click', () => {
+  changeDialog.returnValue = 'cancel'
+  changeType.value = 'lidded'
+  changeLid.checked = true
+  changeLidRow.hidden = false
+  changeDialog.showModal()
 })
-newType.addEventListener('change', () => { $('#new-lid-row').hidden = newType.value !== 'lidded' })
-newDialog.addEventListener('close', () => {
-  if (newDialog.returnValue === 'create') replaceProject(newProject(newType.value, newLid.checked))
+changeType.addEventListener('change', () => { changeLidRow.hidden = changeType.value !== 'lidded' })
+changeDialog.addEventListener('close', () => {
+  if (changeDialog.returnValue === 'reset') replaceProject(newProject(changeType.value, changeLid.checked))
 })

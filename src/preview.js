@@ -25,17 +25,62 @@ function toGeometry({ vertices, triangles, stride }) {
 function partObject(color) {
   const group = new THREE.Group()
   const material = new THREE.MeshStandardMaterial({ color, roughness: 0.68, metalness: 0.03 })
+  const highlight = material.clone()
+  highlight.color.setHex(0x4cd5ce)
+  const subdued = material.clone()
+  subdued.color.multiplyScalar(0.54)
+  const hidden = new THREE.MeshBasicMaterial({ visible: false })
+  // Reuse the face groups and draw a translucent cue only behind the visible surface.
+  const occluded = new THREE.MeshBasicMaterial({
+    color: 0x41e8ff,
+    toneMapped: false,
+    transparent: true,
+    opacity: 0.46,
+    depthFunc: THREE.GreaterDepth,
+    depthWrite: false,
+  })
   const ink = new THREE.LineBasicMaterial({ color: 0x4e2a13, transparent: true, opacity: 0.49 })
-  const face = new THREE.Mesh(new THREE.BufferGeometry(), material)
+  const face = new THREE.Mesh(new THREE.BufferGeometry(), [material, highlight, subdued])
+  const ghost = new THREE.Mesh(face.geometry, [hidden, occluded, hidden])
+  ghost.visible = false
+  ghost.renderOrder = 1
   const edge = new THREE.LineSegments(new THREE.BufferGeometry(), ink)
-  group.add(face, edge)
+  group.add(face, edge, ghost)
+  let mesh
+
+  function select(path) {
+    if (!mesh) return
+    const geometry = face.geometry
+    geometry.clearGroups()
+    ghost.visible = false
+
+    if (!path || mesh.runs.length === 0) {
+      geometry.addGroup(0, mesh.triangles.length, 0)
+      return
+    }
+
+    for (const run of mesh.runs) {
+      let tint = 0
+      if (path === 'root' && run.path !== path) tint = 2
+      if (path !== 'root' && run.path === path) tint = 1
+      const previous = geometry.groups.at(-1)
+      if (previous?.materialIndex === tint) previous.count += run.count
+      else geometry.addGroup(run.start, run.count, tint)
+      if (tint === 1) ghost.visible = true
+    }
+  }
+
   return {
     group,
-    set(mesh) {
+    select,
+    set(nextMesh, path) {
+      mesh = nextMesh
       face.geometry.dispose()
       edge.geometry.dispose()
       face.geometry = toGeometry(mesh)
+      ghost.geometry = face.geometry
       edge.geometry = new THREE.EdgesGeometry(face.geometry, 32)
+      select(path)
     },
   }
 }
@@ -131,6 +176,7 @@ export function createPreview(container, axisCanvas) {
   scene.add(grid, shadow)
 
   let model
+  let selectedPath
   let visibleHeight = 30
   let mode = 'exploded'
   let frame
@@ -216,11 +262,19 @@ export function createPreview(container, axisCanvas) {
   resize()
 
   return {
-    setModel(nextModel) {
+    setModel(nextModel, path) {
       model = nextModel
-      base.set(model.base)
-      if (model.upper) lid.set(model.upper)
+      selectedPath = path
+      base.set(model.base, selectedPath)
+      if (model.upper) lid.set(model.upper, selectedPath)
       arrange()
+    },
+    setSelection(path) {
+      if (selectedPath === path) return
+      selectedPath = path
+      base.select(path)
+      lid.select(path)
+      draw()
     },
     setMode(nextMode) {
       mode = nextMode

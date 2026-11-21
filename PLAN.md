@@ -96,6 +96,8 @@ This is a simple geometry repeater, which takes a geometry primitive parameter p
 The object hierarchy should be shown on a side-panel on the left hand side. From there, parameters, properties, features and child objects for each object can be defined. A live preview is shown on the right.
 
 
+
+
 ## Future features to consider
 - Layer height optimisation
 - Sparse export: a rendering of the model with as little volume/material as possible, for doing test prints to check dimensions and tolerances

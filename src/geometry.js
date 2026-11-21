@@ -53,6 +53,7 @@ export function buildEnclosure({ Manifold }, root) {
   const p = root.parameters
   const layout = enclosureLayout(root)
   const owned = []
+  const objectSources = new Map()
   const own = (solid) => {
     owned.push(solid)
     return solid
@@ -63,6 +64,11 @@ export function buildEnclosure({ Manifold }, root) {
   const cylinder = (length, radius, segments = 48) => own(Manifold.cylinder(length, radius, radius, segments, true))
   const union = (solid, shapes) => shapes.length ? own(Manifold.union([solid, ...shapes])) : solid
   const subtract = (solid, shapes) => shapes.length ? own(Manifold.difference([solid, ...shapes])) : solid
+
+  function trackSource(primitive, path) {
+    objectSources.set(primitive.originalID(), path)
+    return primitive
+  }
 
   function prism(inset, height, z = 0) {
     const contour = roundedRectangle(p.width - 2 * inset, p.depth - 2 * inset, Math.max(0, p.radius - inset))
@@ -98,7 +104,7 @@ export function buildEnclosure({ Manifold }, root) {
     }
   }
 
-  function pressFit({ boardWidth, boardDepth, boardThickness, support, clearance, grip, wall, length }) {
+  function pressFit({ boardWidth, boardDepth, boardThickness, support, clearance, grip, wall, length }, path) {
     const catchZ = support + boardThickness + 0.15
     const outer = clearance + wall
     const outline = [
@@ -107,7 +113,8 @@ export function buildEnclosure({ Manifold }, root) {
       [clearance, support], [-2.4, support],
     ]
     // Rotate the X/Z clip profile onto the board edge and center it along Y.
-    const clip = move(rotate(own(Manifold.extrude([outline], length)), [90, 0, 0]), [boardWidth / 2, length / 2, 0])
+    const profile = trackSource(own(Manifold.extrude([outline], length)), path)
+    const clip = move(rotate(profile, [90, 0, 0]), [boardWidth / 2, length / 2, 0])
     const y = boardDepth / 4
     const mirror = rotate(clip, [0, 0, 180])
     return own(Manifold.union([
@@ -116,12 +123,13 @@ export function buildEnclosure({ Manifold }, root) {
     ]))
   }
 
-  function repeat({ primitive, count, stepX, stepY, stepZ, turnX, turnY, turnZ }) {
+  function repeat({ primitive, count, stepX, stepY, stepZ, turnX, turnY, turnZ }, path) {
     const { width, depth, height, diameter } = primitive.parameters
-    let shape
-    if (primitive.type === 'box') shape = box([width, depth, height], [0, 0, height / 2])
-    else if (primitive.type === 'cylinder') shape = move(cylinder(height, diameter / 2, 32), [0, 0, height / 2])
-    else shape = move(own(Manifold.sphere(diameter / 2, 24)), [0, 0, diameter / 2])
+    let seed
+    if (primitive.type === 'box') seed = own(Manifold.cube([width, depth, height], true))
+    else if (primitive.type === 'cylinder') seed = cylinder(height, diameter / 2, 32)
+    else seed = own(Manifold.sphere(diameter / 2, 24))
+    const shape = move(trackSource(seed, path), [0, 0, (primitive.type === 'sphere' ? diameter : height) / 2])
 
     if (count === 1) return shape
     const copies = [shape]
@@ -132,26 +140,27 @@ export function buildEnclosure({ Manifold }, root) {
     return own(Manifold.union(copies))
   }
 
-  function childGeometry(object, surface) {
-    const solid = object.type === 'repeater' ? repeat(object.parameters) : pressFit(object.parameters)
-    const groups = childGroups(object.children)
+  function childGeometry(object, path, surface) {
+    const solid = object.type === 'repeater' ? repeat(object.parameters, path) : pressFit(object.parameters, path)
+    const groups = childGroups(object.children, path)
     const result = subtract(union(solid, groups.adds), groups.cuts)
     const { x, y, z, angle } = object.placement
     return move(rotate(result, [0, 0, angle]), [x, y, z + surface])
   }
 
-  function childGroups(children, surface = 0) {
+  function childGroups(children, path, surface = 0, part) {
     const adds = []
     const cuts = []
-    for (const object of children) {
-      const result = childGeometry(object, surface)
+    children.forEach((object, index) => {
+      if (part && object.placement.part !== part) return
+      const result = childGeometry(object, path + '.children.' + index, surface)
       const cutting = object.properties.operation === 'cut'
       if (result.status() !== 'NoError' || (!cutting && result.isEmpty())) {
         throw new Error(object.name + ' could not be made into usable geometry.')
       }
       const collection = cutting ? cuts : adds
       collection.push(result)
-    }
+    })
     return { adds, cuts }
   }
 
@@ -174,11 +183,20 @@ export function buildEnclosure({ Manifold }, root) {
       throw new Error('The ' + label.toLowerCase() + ' has disconnected pieces. Check that added objects touch their mounting surface and cutouts leave the walls joined.')
     }
     const shaded = own(solid.calculateNormals(0, 45)).getMesh()
+    // Runs retain their source primitive across copies, transforms, and Boolean operations.
+    const { runIndex, runOriginalID } = shaded
+    const runs = []
+    for (const [i, original] of runOriginalID.entries()) {
+      const start = runIndex[i]
+      const count = runIndex[i + 1] - start
+      if (count) runs.push({ path: objectSources.get(original) ?? 'root', start, count })
+    }
     const model = {
       vertices: new Float32Array(shaded.vertProperties),
       triangles: new Uint32Array(shaded.triVerts),
       stride: shaded.numProp,
       height: solid.boundingBox().max[2],
+      runs,
     }
     if (!hasClosedEdges(model.vertices, model.triangles, model.stride)) {
       throw new Error('The ' + label.toLowerCase() + ' has a collapsed or shared edge. Move any cutouts or objects that just touch.')
@@ -192,7 +210,7 @@ export function buildEnclosure({ Manifold }, root) {
 
   try {
     const openings = root.features.filter(({ type }) => type === 'cutout').map(opening)
-    const baseChildren = childGroups(root.children.filter(({ placement }) => placement.part === 'base'), p.floor - BOOLEAN_OVERLAP)
+    const baseChildren = childGroups(root.children, 'root', p.floor - BOOLEAN_OVERLAP, 'base')
     ensureInside(baseChildren.adds, layout.height - (layout.hasUpper ? p.thickness : 0), layout.baseLabel)
     for (const feature of root.features) {
       if (feature.type === 'screw-posts') screwPosts(feature.parameters, baseChildren.adds, baseChildren.cuts)
@@ -218,7 +236,7 @@ export function buildEnclosure({ Manifold }, root) {
         upper = union(upper, [shoulder])
       }
     }
-    const upperChildren = childGroups(root.children.filter(({ placement }) => placement.part === 'upper'), p.thickness - BOOLEAN_OVERLAP)
+    const upperChildren = childGroups(root.children, 'root', p.thickness - BOOLEAN_OVERLAP, 'upper')
     ensureInside(upperChildren.adds, layout.height - p.floor, layout.upperLabel)
     if (root.type === 'split') upperChildren.cuts.push(...openings.map(flipUpper))
     upper = subtract(union(upper, upperChildren.adds), upperChildren.cuts)

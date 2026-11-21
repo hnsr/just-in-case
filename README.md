@@ -17,9 +17,9 @@ Open the local URL Vite prints. Run `npm test` to check the geometry and project
 
 ## Design and print
 
-Start a **New enclosure** to choose a lidded case, a base-only case, or a split case with an adjustable seam. Select an object in the left-hand tree to edit its parameters, add features, or create child objects.
+Use **Change enclosure** to choose a lidded, base-only, or split case. Confirming the change resets the current project, so use **Save JSON** first if you want to keep it. Select an object in the left-hand tree to edit it and highlight its surfaces in the preview. Use **+** on a row to add a child or the trash icon to remove the object.
 
-- **Project variables** can be numbers or formulas. Use a name like `boardWidth` in a field such as `boardWidth + 16`. Formulas support parentheses and the operators `+`, `-`, `*`, `/`, `%`, and `^`. Dimensions are in millimetres and rotations are in degrees.
+- Open **Variables** beside the project name to edit project-wide numbers and formulas. Use a name like `boardWidth` in a field such as `boardWidth + 16`. Formulas support parentheses and the operators `+`, `-`, `*`, `/`, `%`, and `^`. Dimensions are in millimetres and rotations are in degrees.
 - **Features** include wall cutouts and four screw posts. Cutouts can cross the seam on a split enclosure. Their offsets start at the midpoint of the chosen wall and their heights are measured from the bottom of the enclosure.
 - **PCB press-fit mounts** add four clips to support and grip the edges of a board. Size the clips to your board and printer tolerances.
 - **Geometry repeaters** add or cut a pattern of boxes, cylinders, or spheres. Each copy can shift and rotate along three axes. Children of a repeater use the pattern’s origin.
