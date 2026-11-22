@@ -75,7 +75,7 @@
             <p id="child-picker-title">Add child object</p>
             <button type="button" data-child-type="pcb-mount" autofocus><span data-icon="bolt"></span>PCB press-fit mounts</button>
             <button type="button" data-child-type="pcb-screw-mount"><span data-icon="bolt"></span>PCB screw mounts</button>
-            <button type="button" data-child-type="repeater"><span data-icon="grid"></span>Geometry repeater</button>
+            <button type="button" data-child-type="repeater"><span data-icon="grid"></span>Geometry</button>
           </div>
           <div id="object-inspector"></div>
           <div class="parameter-footer">
@@ -85,12 +85,20 @@
 
         <section class="panel preview" aria-labelledby="preview-title">
           <div class="panel-header preview-header">
-            <h2 id="preview-title"><span data-icon="cube"></span>3D preview</h2>
-            <div class="view-modes" role="group" aria-label="Preview mode">
-              <button type="button" data-view="exploded" aria-pressed="true">Exploded</button>
-              <button type="button" data-view="assembled" aria-pressed="false">Assembled</button>
-              <button type="button" data-view="base" aria-pressed="false">Base</button>
-              <button type="button" data-view="upper" aria-pressed="false">Lid</button>
+            <h2 id="preview-title"><span data-icon="cube"></span>Live preview</h2>
+            <div class="view-controls">
+              <div class="view-modes" role="group" aria-label="Camera view">
+                <button type="button" data-orientation="3d" aria-pressed="true">3D</button>
+                <button type="button" data-orientation="top" aria-pressed="false">Top</button>
+                <button type="button" data-orientation="front" aria-pressed="false">Front</button>
+                <button type="button" data-orientation="side" aria-pressed="false">Side</button>
+              </div>
+              <div class="view-modes" role="group" aria-label="Parts to show">
+                <button type="button" data-view="exploded" aria-pressed="true">Exploded</button>
+                <button type="button" data-view="assembled" aria-pressed="false">Assembled</button>
+                <button type="button" data-view="base" aria-pressed="false">Base</button>
+                <button type="button" data-view="upper" aria-pressed="false">Lid</button>
+              </div>
             </div>
           </div>
           <div id="viewport" class="viewport">
@@ -106,11 +114,11 @@
             <div class="size-readout" title="Assembled width × depth × height">
               <span data-icon="ruler"></span><span id="size-value">—</span>
             </div>
-            <label class="preview-reference" title="Show a 180 mm reference banana">
+            <label class="preview-reference" title="Show a 205 mm reference banana">
               <input type="checkbox" id="banana-for-scale" autocomplete="off">
               <span>Banana for scale</span>
             </label>
-            <div class="preview-help"><span data-icon="mouse"></span><span>Drag to orbit · Scroll to zoom</span></div>
+            <div class="preview-help"><span data-icon="mouse"></span><span id="preview-help">Drag to orbit · Scroll to zoom</span></div>
           </footer>
         </section>
       </div>

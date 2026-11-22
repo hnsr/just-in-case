@@ -4,6 +4,12 @@ import { createBanana } from './banana.js'
 import { createCutterOutline } from './cutter-outline.js'
 
 const initialAngle = new THREE.Vector3(0.96, 0.76, 1.28).normalize()
+// View from +Z for the enclosure's front (its negative Y wall) and +X for its right side.
+const alignmentViews = {
+  top: { direction: [0, 1, 0], up: [0, 0, -1], horizontal: 'x', vertical: 'z' },
+  front: { direction: [0, 0, 1], up: [0, 1, 0], horizontal: 'x', vertical: 'y' },
+  side: { direction: [1, 0, 0], up: [0, 1, 0], horizontal: 'z', vertical: 'y' },
+}
 const axes = [
   [new THREE.Vector3(1, 0, 0), '#e78a81', 'X'],
   [new THREE.Vector3(0, 0, -1), '#95c69f', 'Y'],
@@ -43,7 +49,14 @@ function partObject(color) {
     depthWrite: false,
   })
   const ink = new THREE.LineBasicMaterial({ color: 0x4e2a13, transparent: true, opacity: 0.49 })
-  const face = new THREE.Mesh(new THREE.BufferGeometry(), [material, highlight, subdued])
+  const shaded = [material, highlight, subdued]
+  const translucent = [material.color, highlight.color, subdued.color].map((color, index) => new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: index === 1 ? 0.48 : 0.19, depthWrite: false, toneMapped: false,
+  }))
+  const alignmentInk = new THREE.LineBasicMaterial({
+    color: 0xf6bc82, transparent: true, opacity: 0.63, depthWrite: false, toneMapped: false,
+  })
+  const face = new THREE.Mesh(new THREE.BufferGeometry(), shaded)
   const ghost = new THREE.Mesh(face.geometry, [hidden, occluded, hidden])
   ghost.visible = false
   ghost.renderOrder = 1
@@ -51,39 +64,61 @@ function partObject(color) {
   group.add(face, edge, ghost)
   let mesh
 
-  function select(path) {
+  function updateEdges(geometry) {
+    edge.geometry.dispose()
+    const count = geometry.groups.reduce((sum, group) => sum + group.count, 0)
+    const triangles = geometry.index.array
+    if (count === triangles.length) {
+      edge.geometry = new THREE.EdgesGeometry(geometry, 32)
+      return
+    }
+    const visibleTriangles = new Uint32Array(count)
+    let cursor = 0
+    for (const { start, count } of geometry.groups) {
+      visibleTriangles.set(triangles.subarray(start, start + count), cursor)
+      cursor += count
+    }
+    const visibleFaces = new THREE.BufferGeometry()
+      .setAttribute('position', geometry.getAttribute('position'))
+      .setIndex(new THREE.BufferAttribute(visibleTriangles, 1))
+    edge.geometry = new THREE.EdgesGeometry(visibleFaces, 32)
+  }
+
+  function select(path, isHidden, refreshEdges = false) {
     if (!mesh) return
     const geometry = face.geometry
     geometry.clearGroups()
     ghost.visible = false
 
-    if (!path || mesh.runs.length === 0) {
-      geometry.addGroup(0, mesh.triangles.length, 0)
-      return
-    }
-
     for (const run of mesh.runs) {
+      if (isHidden(run.visiblePath)) continue
       let tint = 0
       if (path === 'root' && run.path !== path) tint = 2
-      if (path !== 'root' && run.path === path) tint = 1
+      if (path !== 'root' && run.path === path && !isHidden(path)) tint = 1
       const previous = geometry.groups.at(-1)
-      if (previous?.materialIndex === tint) previous.count += run.count
+      if (previous?.materialIndex === tint && previous.start + previous.count === run.start) previous.count += run.count
       else geometry.addGroup(run.start, run.count, tint)
-      if (tint === 1) ghost.visible = true
+      if (tint === 1 && face.material === shaded) ghost.visible = true
     }
+    if (mesh.runs.length === 0) geometry.addGroup(0, mesh.triangles.length, 0)
+    if (refreshEdges) updateEdges(geometry)
   }
 
   return {
     group,
     select,
-    set(nextMesh, path) {
+    setTranslucent(enabled) {
+      face.material = enabled ? translucent : shaded
+      edge.material = enabled ? alignmentInk : ink
+      edge.renderOrder = enabled ? 1 : 0
+      ghost.visible = !enabled && face.geometry.groups.some(({ materialIndex }) => materialIndex === 1)
+    },
+    set(nextMesh, path, isHidden) {
       mesh = nextMesh
       face.geometry.dispose()
-      edge.geometry.dispose()
       face.geometry = toGeometry(mesh)
       ghost.geometry = face.geometry
-      edge.geometry = new THREE.EdgesGeometry(face.geometry, 32)
-      select(path)
+      select(path, isHidden, true)
     },
   }
 }
@@ -119,7 +154,7 @@ function contactShadow() {
   return shadow
 }
 
-function drawAxes(canvas, camera) {
+function drawAxes(canvas, camera, aligned) {
   const context = canvas.getContext('2d')
   const rotation = camera.quaternion.clone().invert()
   const origin = [36, 38]
@@ -130,6 +165,7 @@ function drawAxes(canvas, camera) {
   context.textBaseline = 'middle'
   for (const [axis, color, label] of axes) {
     const vector = axis.clone().applyQuaternion(rotation)
+    if (aligned && Math.hypot(vector.x, vector.y) < 0.01) continue
     const point = [origin[0] + vector.x * 23, origin[1] - vector.y * 23]
     context.beginPath()
     context.moveTo(...origin)
@@ -157,6 +193,7 @@ export function createPreview(container, axisCanvas) {
 
   const scene = new THREE.Scene()
   const camera = new THREE.OrthographicCamera(-100, 100, 100, -100, 0.1, 8000)
+  const alignmentCamera = camera.clone()
   camera.position.copy(initialAngle).multiplyScalar(700)
   const controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
@@ -170,7 +207,7 @@ export function createPreview(container, axisCanvas) {
   const base = partObject(0xdf9137)
   const lid = partObject(0xf4aa49)
   const cutterOutline = createCutterOutline()
-  const placementGuides = { base: new THREE.Group(), upper: new THREE.Group() }
+  const overlays = { base: new THREE.Group(), upper: new THREE.Group() }
   const invalidSurface = new THREE.MeshStandardMaterial({
     color: 0xf03944, emissive: 0x70121e, roughness: 0.68,
   })
@@ -182,8 +219,28 @@ export function createPreview(container, axisCanvas) {
     depthFunc: THREE.GreaterDepth,
     depthWrite: false,
   })
-  base.group.add(placementGuides.base)
-  lid.group.add(placementGuides.upper)
+  const invalidTranslucent = new THREE.MeshBasicMaterial({
+    color: 0xff5967, transparent: true, opacity: 0.46, depthWrite: false, toneMapped: false,
+  })
+  const invalidOutline = new THREE.LineBasicMaterial({
+    color: 0xff7784,
+    toneMapped: false,
+    transparent: true,
+    opacity: 0.9,
+    depthTest: false,
+    depthWrite: false,
+  })
+  const referenceSurface = new THREE.MeshStandardMaterial({
+    color: 0x4799ff, roughness: 0.72, transparent: true, opacity: 0.48, depthWrite: false,
+  })
+  const selectedReference = referenceSurface.clone()
+  selectedReference.color.setHex(0x6bbaff)
+  selectedReference.opacity = 0.68
+  const referenceOccluded = invalidOccluded.clone()
+  referenceOccluded.color.setHex(0x67b6ff)
+  referenceOccluded.opacity = 0.33
+  base.group.add(overlays.base)
+  lid.group.add(overlays.upper)
   scene.add(base.group, lid.group)
 
   const grid = new THREE.GridHelper(400, 40, 0x5e5650, 0x343239)
@@ -195,21 +252,26 @@ export function createPreview(container, axisCanvas) {
 
   let model
   let selectedPath
+  let hiddenPaths = new Set()
   let cutterBounds
   let banana
   let bananaShadow
+  let bananaMaterials
   let visibleHeight = 30
   let framingRadius = 0
   let cameraDistance = 700
+  let alignmentView
+  const alignmentSize = new THREE.Vector2(100, 70)
   let mode = 'exploded'
   let frame
 
   function render() {
     frame = undefined
-    controls.update()
-    cutterOutline.update(camera, container.clientHeight * camera.zoom / (camera.top - camera.bottom))
-    renderer.render(scene, camera)
-    drawAxes(axisCanvas, camera)
+    if (!alignmentView) controls.update()
+    const active = alignmentView ? alignmentCamera : camera
+    cutterOutline.update(active, container.clientHeight * active.zoom / (active.top - active.bottom))
+    renderer.render(scene, active)
+    drawAxes(axisCanvas, active, alignmentView)
   }
 
   function draw() {
@@ -218,21 +280,22 @@ export function createPreview(container, axisCanvas) {
 
   function resize() {
     const aspect = Math.max(container.clientWidth, 1) / Math.max(container.clientHeight, 1)
-    const width = model?.layout.width ?? 100
-    const depth = model?.layout.depth ?? 70
-    const widest = Math.hypot(width, depth)
-    const span = Math.max(widest * 0.68, widest * 0.67 / aspect, visibleHeight * 0.67, framingRadius * 1.12 / Math.min(aspect, 1))
-    camera.left = -span * aspect
-    camera.right = span * aspect
-    camera.top = span
-    camera.bottom = -span
-    camera.updateProjectionMatrix()
+    const active = alignmentView ? alignmentCamera : camera
+    const widest = Math.hypot(model?.layout.width ?? 100, model?.layout.depth ?? 70)
+    const span = alignmentView
+      ? Math.max(alignmentSize.x / aspect, alignmentSize.y, 1) * 0.64
+      : Math.max(widest * 0.68, widest * 0.67 / aspect, visibleHeight * 0.67, framingRadius * 1.12 / Math.min(aspect, 1))
+    active.left = -span * aspect
+    active.right = span * aspect
+    active.top = span
+    active.bottom = -span
+    active.updateProjectionMatrix()
     renderer.setSize(container.clientWidth, container.clientHeight, false)
     draw()
   }
 
   function updateCutter() {
-    const cutter = model?.cutters.get(selectedPath)
+    const cutter = isHidden(selectedPath) ? undefined : model?.cutters.get(selectedPath)
     if (!cutter) {
       cutterBounds = cutterOutline.set()
       cutterOutline.line.removeFromParent()
@@ -245,19 +308,63 @@ export function createPreview(container, axisCanvas) {
     part.group.add(cutterOutline.line)
   }
 
-  function updatePlacementGuides() {
-    for (const guide of Object.values(placementGuides)) {
-      for (const object of guide.children) object.geometry.dispose()
-      guide.clear()
+  function isHidden(path) {
+    if (!path) return false
+    for (const hidden of hiddenPaths) {
+      if (path === hidden || path.startsWith(hidden + '.')) return true
     }
-    for (const { part, mesh } of model.invalidPlacements) {
-      const geometry = toGeometry(mesh)
+    return false
+  }
+
+  function updateOverlayVisibility() {
+    for (const group of Object.values(overlays)) {
+      for (const object of group.children) {
+        const { paths, referencePath } = object.userData
+        object.visible = !paths.length || !paths.every(isHidden)
+        if (referencePath) {
+          const selected = referencePath === selectedPath
+          object.material = selected ? selectedReference : referenceSurface
+          object.children[0].visible = selected && !alignmentView
+        } else if (object.isMesh) {
+          object.material = alignmentView ? invalidTranslucent : invalidSurface
+          object.children[0].visible = !alignmentView
+        }
+      }
+    }
+  }
+
+  function updateOverlays() {
+    for (const group of Object.values(overlays)) {
+      for (const object of group.children) object.geometry.dispose()
+      group.clear()
+    }
+    for (const { part, mesh, outline, paths } of model.previewGuides) {
+      const geometry = toGeometry(mesh, !outline)
+      if (outline) {
+        const line = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 30), invalidOutline)
+        geometry.dispose()
+        line.renderOrder = 3
+        line.userData.paths = paths
+        overlays[part].add(line)
+        continue
+      }
       const object = new THREE.Mesh(geometry, invalidSurface)
+      object.userData.paths = paths
       const ghost = new THREE.Mesh(geometry, invalidOccluded)
       ghost.renderOrder = 2
       object.add(ghost)
-      placementGuides[part].add(object)
+      overlays[part].add(object)
     }
+    for (const { part, path, mesh } of model.references) {
+      const geometry = toGeometry(mesh)
+      const object = new THREE.Mesh(geometry, referenceSurface)
+      object.userData = { paths: [path], referencePath: path }
+      const ghost = new THREE.Mesh(geometry, referenceOccluded)
+      ghost.renderOrder = 1
+      object.add(ghost)
+      overlays[part].add(object)
+    }
+    updateOverlayVisibility()
   }
 
   function aimCamera(width, depth) {
@@ -269,20 +376,34 @@ export function createPreview(container, axisCanvas) {
       part.updateWorldMatrix(true, false)
       referenceBounds.union(cutterBounds.clone().applyMatrix4(part.matrixWorld))
     }
-    for (const guide of Object.values(placementGuides)) {
-      if (guide.children.length && guide.parent.visible) {
-        guide.updateWorldMatrix(true, false)
-        referenceBounds.expandByObject(guide)
+    for (const group of Object.values(overlays)) {
+      if (group.children.length && group.parent.visible) {
+        group.updateWorldMatrix(true, false)
+        for (const object of group.children) {
+          if (object.visible) referenceBounds.expandByObject(object)
+        }
       }
     }
     if (banana?.visible) {
       referenceBounds.union(banana.geometry.boundingBox.clone().translate(banana.position))
     }
+    const enclosure = new THREE.Box3(
+      new THREE.Vector3(-width / 2, 0, -depth / 2),
+      new THREE.Vector3(width / 2, visibleHeight, depth / 2),
+    )
+    if (alignmentView) {
+      const bounds = enclosure.union(referenceBounds)
+      const size = bounds.getSize(new THREE.Vector3())
+      bounds.getCenter(target)
+      alignmentSize.set(size[alignmentView.horizontal], size[alignmentView.vertical])
+      const distance = Math.max(700, size.length())
+      alignmentCamera.position.fromArray(alignmentView.direction).multiplyScalar(distance).add(target)
+      alignmentCamera.up.fromArray(alignmentView.up)
+      alignmentCamera.far = Math.max(8000, distance + size.length() + 10)
+      alignmentCamera.lookAt(target)
+      return
+    }
     if (!referenceBounds.isEmpty()) {
-      const enclosure = new THREE.Box3(
-        new THREE.Vector3(-width / 2, 0, -depth / 2),
-        new THREE.Vector3(width / 2, visibleHeight, depth / 2),
-      )
       const padding = Math.max(width, depth, visibleHeight) * 0.1
       if (!enclosure.clone().expandByScalar(padding).containsBox(referenceBounds)) {
         enclosure.union(referenceBounds).getCenter(target)
@@ -300,8 +421,10 @@ export function createPreview(container, axisCanvas) {
     const { width, depth, height, hasUpper } = model.layout
     const gap = Math.max(13, Math.min(39, Math.min(width, depth) * 0.36))
     const isolated = mode === 'upper'
-    base.group.visible = !hasUpper || !isolated
-    lid.group.visible = Boolean(hasUpper && mode !== 'base')
+    const showEnclosure = !isHidden('root')
+    base.group.visible = showEnclosure && (!hasUpper || !isolated)
+    lid.group.visible = showEnclosure && Boolean(hasUpper && mode !== 'base')
+    shadow.visible = showEnclosure && !alignmentView
     // The upper part is face-down in its STL and in the isolated view.
     lid.group.rotation.x = isolated ? 0 : Math.PI
     lid.group.position.y = isolated ? 0 : height + (mode === 'exploded' ? gap : 0)
@@ -309,42 +432,65 @@ export function createPreview(container, axisCanvas) {
       : isolated ? model.upper.height : lid.group.position.y
     if (banana?.visible) {
       banana.position.set(-12, 0, depth / 2 + 14 - banana.geometry.boundingBox.min.z)
+      banana.material = alignmentView ? bananaMaterials.translucent : bananaMaterials.shaded
+      bananaShadow.visible = !alignmentView
       bananaShadow.position.x = banana.position.x
       bananaShadow.position.z = banana.position.z
     }
     aimCamera(width, depth)
     const gridStep = Math.max(0.5, Math.ceil(Math.max(width, depth) / 120))
     grid.scale.setScalar(gridStep)
+    const front = alignmentView === alignmentViews.front
+    const side = alignmentView === alignmentViews.side
+    grid.rotation.set(front ? Math.PI / 2 : 0, 0, side ? Math.PI / 2 : 0)
+    grid.position.set(side ? -width / 2 - 0.25 : 0, front || side ? 0 : -0.25, front ? -depth / 2 - 0.25 : 0)
+    grid.material.depthWrite = !alignmentView
+    grid.renderOrder = alignmentView ? -1 : 0
     shadow.scale.set(width * 1.5, depth * 1.65, 1)
-    controls.update()
+    if (!alignmentView) controls.update()
     resize()
   }
 
   function resetCamera() {
-    camera.position.copy(initialAngle).multiplyScalar(cameraDistance).add(controls.target)
-    camera.zoom = 1
-    camera.updateProjectionMatrix()
-    controls.update()
+    const active = alignmentView ? alignmentCamera : camera
+    active.zoom = 1
+    if (!alignmentView) {
+      camera.position.copy(initialAngle).multiplyScalar(cameraDistance).add(controls.target)
+      controls.update()
+    }
+    active.updateProjectionMatrix()
     draw()
   }
 
+  function zoom(active, multiplier) {
+    active.zoom = THREE.MathUtils.clamp(active.zoom * multiplier, controls.minZoom, controls.maxZoom)
+    active.updateProjectionMatrix()
+    draw()
+  }
+
+  renderer.domElement.addEventListener('wheel', (event) => {
+    if (!alignmentView || !event.deltaY) return
+    event.preventDefault()
+    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : 1)
+    zoom(alignmentCamera, Math.exp(-delta * 0.0015))
+  }, { passive: false })
+
   renderer.domElement.addEventListener('keydown', (event) => {
     const movement = { ArrowLeft: [-0.15, 0], ArrowRight: [0.15, 0], ArrowUp: [0, -0.15], ArrowDown: [0, 0.15] }[event.key]
-    if (movement) {
+    if (movement && !alignmentView) {
       const offset = camera.position.clone().sub(controls.target)
       const spherical = new THREE.Spherical().setFromVector3(offset)
       spherical.theta += movement[0]
       spherical.phi = THREE.MathUtils.clamp(spherical.phi + movement[1], 0.02, controls.maxPolarAngle)
       camera.position.copy(controls.target).add(offset.setFromSpherical(spherical))
+      controls.update()
+      draw()
     } else if (['+', '=', '-'].includes(event.key)) {
-      camera.zoom = THREE.MathUtils.clamp(camera.zoom * (event.key === '-' ? 0.87 : 1.15), controls.minZoom, controls.maxZoom)
-      camera.updateProjectionMatrix()
+      zoom(alignmentView ? alignmentCamera : camera, event.key === '-' ? 0.87 : 1.15)
     } else {
       return
     }
     event.preventDefault()
-    controls.update()
-    draw()
   })
 
   controls.addEventListener('change', draw)
@@ -352,26 +498,49 @@ export function createPreview(container, axisCanvas) {
   observer.observe(container)
   resize()
 
+  function refreshSelection(refreshEdges) {
+    base.select(selectedPath, isHidden, refreshEdges)
+    if (model?.upper) lid.select(selectedPath, isHidden, refreshEdges)
+    updateOverlayVisibility()
+    updateCutter()
+    arrange()
+  }
+
   return {
-    setModel(nextModel, path) {
+    setModel(nextModel, path, paths) {
       model = nextModel
       selectedPath = path
-      base.set(model.base, selectedPath)
-      if (model.upper) lid.set(model.upper, selectedPath)
-      updatePlacementGuides()
+      hiddenPaths = paths
+      base.set(model.base, selectedPath, isHidden)
+      if (model.upper) lid.set(model.upper, selectedPath, isHidden)
+      updateOverlays()
       updateCutter()
       arrange()
     },
     setSelection(path) {
       if (selectedPath === path) return
       selectedPath = path
-      base.select(path)
-      lid.select(path)
-      updateCutter()
-      arrange()
+      refreshSelection(false)
+    },
+    setHidden(paths) {
+      hiddenPaths = paths
+      refreshSelection(true)
     },
     setMode(nextMode) {
       mode = nextMode
+      arrange()
+    },
+    setOrientation(orientation) {
+      alignmentView = alignmentViews[orientation]
+      controls.enabled = !alignmentView
+      container.classList.toggle('is-aligned', Boolean(alignmentView))
+      renderer.domElement.setAttribute('aria-label', alignmentView
+        ? 'Enclosure ' + orientation + ' view. Use plus or minus to zoom.'
+        : 'Enclosure preview. Use arrow keys to orbit, and plus or minus to zoom.')
+      base.setTranslucent(Boolean(alignmentView))
+      lid.setTranslucent(Boolean(alignmentView))
+      updateOverlayVisibility()
+      if (alignmentView) alignmentCamera.zoom = 1
       arrange()
     },
     resetCamera,
@@ -382,6 +551,11 @@ export function createPreview(container, axisCanvas) {
     setBananaVisible(visible) {
       if (visible && !banana) {
         banana = createBanana()
+        const translucent = banana.material.clone()
+        translucent.transparent = true
+        translucent.opacity = 0.56
+        translucent.depthWrite = false
+        bananaMaterials = { shaded: banana.material, translucent }
         bananaShadow = shadow.clone()
         const size = banana.geometry.boundingBox.getSize(new THREE.Vector3())
         bananaShadow.scale.set(size.x * 1.24, size.z * 1.35, 1)

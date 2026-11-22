@@ -3,7 +3,7 @@ import test from 'node:test'
 import * as THREE from 'three'
 import { createCutterOutline } from '../src/cutter-outline.js'
 import { buildEnclosure, initGeometry } from '../src/geometry.js'
-import { defaultProject, evaluateProject, makeChild, makeFeature, newProject, parseProject, projectJSON } from '../src/project.js'
+import { defaultProject, evaluateProject, makeChild, makeFeature, newProject, parseProject, projectJSON, screwClosureDraftIssues } from '../src/project.js'
 import { makePrimitive } from '../src/definitions.js'
 import { enclosureSTL } from '../src/stl.js'
 
@@ -203,6 +203,64 @@ test('screw closures reject duplicate features, unsupported roots, and obstructi
   assert.throws(() => build(project), /overlaps another object or cut on the lid/)
 })
 
+test('invalid screw dimensions and placements produce draft guides on both parts and block export', () => {
+  const project = newProject()
+  const feature = makeFeature('screw-closure', project.root)
+  project.root.features.push(feature)
+  const withoutClosure = build(newProject())
+  const preview = () => {
+    const { root, issues } = evaluateProject(project)
+    return buildEnclosure(geometry, root, { preview: true, screwIssues: screwClosureDraftIssues(root, issues) })
+  }
+
+  feature.parameters.insetY = 3
+  let model = preview()
+  assert.deepEqual(model.previewIssues.map(({ field }) => field), ['root.features.0.parameters.insetY'])
+  assert(model.previewGuides.some(({ part, mesh }) => part === 'base' && hasVertex(mesh, 42, 32, 30)))
+  assert(model.previewGuides.some(({ part, mesh, outline }) => part === 'upper' && outline && hasVertex(mesh, 39.7, -32, -0.05)))
+  assert.deepEqual(model.base.triangles, withoutClosure.base.triangles)
+  assert.deepEqual(model.upper.triangles, withoutClosure.upper.triangles)
+  assert.throws(() => enclosureSTL(model, 'both'), /must clear the inner walls/)
+
+  feature.parameters.insetY = 12
+  feature.parameters.counterboreDepth = 3
+  model = preview()
+  assert.match(model.previewIssues[0].message, /below the counterbore/)
+  assert(model.previewGuides.some(({ part, mesh, outline }) => part === 'upper' && outline && hasVertex(mesh, 41.1, -23, 3)))
+  feature.parameters.counterboreDepth = 'missing'
+  model = preview()
+  assert.match(model.previewIssues[0].message, /Unknown variable/)
+  assert.equal(model.previewGuides.filter(({ part }) => part === 'upper').length, 4, 'plain hole outlines remain while the counterbore has no usable depth')
+  feature.parameters.counterboreDepth = 1
+
+  const obstruction = makeChild('repeater')
+  obstruction.parameters.count = 1
+  Object.assign(obstruction.placement, { part: 'upper', x: 38, y: -23 })
+  project.root.children.push(obstruction)
+  model = preview()
+  assert.match(model.previewIssues[0].message, /overlaps another object or cut on the lid/)
+  assert(model.previewGuides.some(({ part }) => part === 'base'))
+  assert(model.upper.runs.some(({ path }) => path === 'root.children.0'))
+  assert.throws(() => enclosureSTL(model, 'both'), /overlaps another object/)
+
+  obstruction.placement.x = 0
+  model = preview()
+  assert.deepEqual(model.previewIssues, [])
+  assert.deepEqual(model.previewGuides, [])
+  inspectSTL(enclosureSTL(model, 'both'))
+})
+
+test('a screw draft still checks the enclosure constraints before building', () => {
+  const project = newProject()
+  const feature = makeFeature('screw-closure', project.root)
+  project.root.features.push(feature)
+  project.root.parameters.radius = 36
+  feature.parameters.pilotDepth = ''
+  const { root, issues } = evaluateProject(project)
+  assert(issues.some(({ field }) => field === 'root.parameters.radius'))
+  assert.deepEqual(screwClosureDraftIssues(root, issues), [])
+})
+
 test('split halves stay closed and a seam cutout subtracts from both', () => {
   const project = newProject('split')
   project.root.parameters.seam = 14
@@ -316,8 +374,9 @@ test('preview faces identify their object after nesting, cutting, and splitting 
 
   assert.deepEqual(sourcePaths(base), ['root', 'root.children.1', 'root.children.1.children.0', 'root.children.2'])
   assert.deepEqual(sourcePaths(upper), ['root', 'root.children.0'])
-  for (const { path, start, count } of base.runs) {
+  for (const { path, start, count, visiblePath } of base.runs) {
     if (path !== 'root.children.2') continue
+    assert.equal(visiblePath, 'root', 'cutter faces remain with the enclosure when the cutter guide is hidden')
     for (const index of base.triangles.subarray(start, start + count)) {
       const z = base.vertices[index * base.stride + 2]
       assert(z >= -0.001 && z <= project.root.parameters.floor + 0.001, 'cut faces belong to the floor holes')
@@ -325,15 +384,20 @@ test('preview faces identify their object after nesting, cutting, and splitting 
   }
 })
 
-test('a configured repeater can switch from adding to cutting without changing its pattern', () => {
+test('geometry starts as one shape and can add or cut a repeated pattern', () => {
   const project = newProject()
   const baseVolume = () => inspectSTL(enclosureSTL(build(project), 'base')).volume
   const emptyVolume = baseVolume()
   const repeater = makeChild('repeater')
+  assert.equal(repeater.name, 'Geometry')
+  assert.equal(repeater.parameters.count, 1)
   repeater.placement.z = -1
   project.root.children.push(repeater)
   assert.equal(repeater.properties.operation, 'add')
-  assert(baseVolume() > emptyVolume)
+  const singleVolume = baseVolume()
+  assert(singleVolume > emptyVolume)
+  repeater.parameters.count = 4
+  assert(baseVolume() > singleVolume)
 
   const { parameters, placement } = structuredClone(repeater)
   repeater.properties.operation = 'cut'
@@ -479,32 +543,143 @@ test('bad placements, kissing cutouts, and colliding parts are rejected before e
 test('the preview keeps an out-of-bounds lid repeater at its draft placement until it fits', () => {
   const project = newProject()
   const repeater = makeChild('repeater')
+  repeater.parameters.count = 4
   repeater.placement = { part: 'upper', x: 49, y: -20, z: 0, angle: 90 }
   project.root.children.push(repeater)
   const preview = () => {
     const { root, issues } = evaluateProject(project)
     assert.deepEqual(issues, [])
-    return buildEnclosure(geometry, root, { previewInvalidPlacements: true })
+    return buildEnclosure(geometry, root, { preview: true })
   }
 
   const draft = preview()
-  const [issue] = draft.invalidPlacements
-  assert.equal(draft.invalidPlacements.length, 1)
-  assert.equal(issue.part, 'upper')
+  const [issue] = draft.previewIssues
+  const [guide] = draft.previewGuides
+  assert.equal(draft.previewIssues.length, 1)
+  assert.equal(guide.part, 'upper')
   assert.equal(issue.field, 'root.children.0.placement')
-  assert.match(issue.message, /Geometry repeater.*lid.*outside the assembled case/)
+  assert.match(issue.message, /Geometry.*lid.*outside the assembled case/)
   assert.match(issue.hint, /Decrease X offset/)
-  assert(hasVertex(issue.mesh, 51.5, 12.5, 7.35), 'the guide preserves lid coordinates and the rotated copies')
+  assert(hasVertex(guide.mesh, 51.5, 12.5, 7.35), 'the guide preserves lid coordinates and the rotated copies')
   assert(draft.upper.runs.every(({ path }) => path === 'root'))
   assert.throws(() => enclosureSTL(draft, 'both'), /outside the assembled case/)
   assert.throws(() => build(project), /outside the assembled case/)
 
   repeater.placement.x = 12
   repeater.placement.z = -4
-  assert.match(preview().invalidPlacements[0].hint, /Increase Z offset/)
+  assert.match(preview().previewIssues[0].hint, /Increase Z offset/)
   repeater.placement.z = 0
   const fixed = preview()
-  assert.deepEqual(fixed.invalidPlacements, [])
+  assert.deepEqual(fixed.previewIssues, [])
   assert(fixed.upper.runs.some(({ path }) => path === 'root.children.0'))
   inspectSTL(enclosureSTL(fixed, 'both'))
+})
+
+test('floating geometry follows edits in the base and lid previews until it reconnects', () => {
+  for (const part of ['base', 'upper']) {
+    const project = newProject('lidded', part === 'upper')
+    const object = makeChild('repeater')
+    object.placement.part = part
+    project.root.children.push(object)
+    const preview = () => buildEnclosure(geometry, evaluateProject(project).root, { preview: true })
+
+    for (const z of [2, 8]) {
+      object.placement.z = z
+      const draft = preview()
+      const [issue] = draft.previewIssues
+      const [guide] = draft.previewGuides
+      assert.equal(issue.field, 'root.children.0.placement')
+      assert.match(issue.message, /disconnected/)
+      assert.match(issue.hint, /Decrease Z offset/)
+      assert.equal(guide.part, part)
+      assert(hasVertex(guide.mesh, -12.5, 2.5, 7.35 + z))
+      assert(draft[part].runs.every(({ path }) => path === 'root'))
+      assert.throws(() => enclosureSTL(draft, part), /disconnected/)
+      assert.throws(() => build(project), /disconnected/)
+    }
+
+    object.placement.z = 0
+    const fixed = preview()
+    assert.deepEqual(fixed.previewIssues, [])
+    assert.deepEqual(fixed.previewGuides, [])
+    assert(fixed[part].runs.some(({ path }) => path === 'root.children.0'))
+    inspectSTL(enclosureSTL(fixed, part))
+  }
+})
+
+test('only the loose copies appear as guides when nested geometry is partly attached', () => {
+  const project = newProject()
+  const parent = makeChild('repeater')
+  parent.placement.x = 0
+  Object.assign(parent.parameters.primitive.parameters, { width: 8, depth: 8, height: 8 })
+  const child = makeChild('repeater', false)
+  Object.assign(child.placement, { x: 5, z: 3 })
+  Object.assign(child.parameters, { count: 2, stepX: 10 })
+  parent.children.push(child)
+  project.root.children.push(parent)
+
+  const draft = buildEnclosure(geometry, evaluateProject(project).root, { preview: true })
+  assert.deepEqual(draft.previewIssues.map(({ field }) => field), ['root.children.0.children.0.placement'])
+  assert.equal(draft.previewGuides.length, 1)
+  assert(hasVertex(draft.previewGuides[0].mesh, 17.5, 2.5, 10.35))
+  assert(draft.base.runs.some(({ path }) => path === 'root.children.0.children.0'))
+  assert(hasVertex(draft.base, 7.5, 2.5, 10.35))
+  assert(!hasVertex(draft.base, 17.5, 2.5, 10.35))
+})
+
+test('a reference branch inherits transforms and stays out of both printable parts', () => {
+  const project = newProject()
+  const original = enclosureSTL(build(project), 'both')
+  const board = makeChild('repeater')
+  board.properties.operation = 'cut'
+  board.properties.reference = true
+  Object.assign(board.placement, { part: 'upper', x: 90, y: 24, z: 11, angle: 90 })
+  const connector = makeChild('repeater', false)
+  connector.properties.reference = false
+  Object.assign(connector.placement, { x: 7, y: 2, z: 3 })
+  const mounts = makeChild('pcb-screw-mount', false)
+  board.children.push(connector, mounts)
+  project.root.children.push(board)
+
+  const saved = parseProject(projectJSON(project))
+  assert.equal(saved.root.children[0].properties.reference, true)
+  assert.equal(saved.root.children[0].children[0].properties.reference, false)
+  let model = build(saved)
+  assert.deepEqual(model.previewIssues, [])
+  assert.deepEqual(enclosureSTL(model, 'both'), original)
+  assert.equal(model.cutters.size, 0)
+  assert.equal(model.references.length, 3)
+  assert(model.references.every(({ part }) => part === 'upper'))
+  const boardMesh = model.references.find(({ path }) => path === 'root.children.0').mesh
+  const connectorMesh = model.references.find(({ path }) => path === 'root.children.0.children.0').mesh
+  assert(hasVertex(boardMesh, 92.5, 26.5, 18.35))
+  assert(hasVertex(connectorMesh, 90.5, 33.5, 21.35))
+
+  Object.assign(board.placement, { part: 'base', x: 0, y: 0, z: -3, angle: 0 })
+  model = build(project)
+  assert.deepEqual(enclosureSTL(model, 'both'), original, 'reference cutters do not remove floor material')
+  board.children.length = 0
+  board.properties.reference = false
+  model = build(project)
+  assert.equal(model.references.length, 0)
+  assert.equal(model.cutters.size, 1)
+  assert.notDeepEqual(enclosureSTL(model, 'both'), original)
+})
+
+test('a reference child keeps its position relative to a printable parent', () => {
+  const project = newProject('lidded', false)
+  const parent = makeChild('repeater')
+  parent.placement.angle = 90
+  project.root.children.push(parent)
+  const original = enclosureSTL(build(project), 'base')
+  const reference = makeChild('repeater', false)
+  reference.properties.reference = true
+  Object.assign(reference.placement, { x: 115, y: 6, z: -10 })
+  parent.children.push(reference)
+
+  const model = build(project)
+  const [guide] = model.references
+  assert.equal(guide.path, 'root.children.0.children.0')
+  assert(hasVertex(guide.mesh, -18.5, 117.5, -2.65))
+  assert.deepEqual(enclosureSTL(model, 'base'), original)
 })

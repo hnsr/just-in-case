@@ -46,9 +46,9 @@ export const CHILD_TYPES = {
     },
   },
   repeater: {
-    label: 'Geometry repeater', icon: 'grid',
+    label: 'Geometry', icon: 'grid', supportsReference: true,
     fields: {
-      count: { label: 'Copies', value: 4, min: 1, max: 32, integer: true },
+      count: { label: 'Copies', value: 1, min: 1, max: 32, integer: true },
       stepX: mm('X step', 10, -400, 400),
       stepY: mm('Y step', 0, -400, 400),
       stepZ: mm('Z step', 0, -200, 200),

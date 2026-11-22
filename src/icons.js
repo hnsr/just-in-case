@@ -13,6 +13,8 @@ const paths = {
   scissors: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M8 8l13 13M8 16 21 3"/>',
   bolt: '<path d="m8 3-4 4v7l4 4h8l4-4V7l-4-4H8Zm-4 8h16M9 18v3m6-3v3"/>',
   plus: '<path d="M12 5v14m-7-7h14"/>',
+  eye: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/>',
+  eyeOff: '<path d="m3 3 18 18M9 6.4a11 11 0 0 1 3-.4c6.5 0 10 6 10 6a16 16 0 0 1-2.8 3.1M6.1 7.6A16 16 0 0 0 2 12s3.5 6 10 6a11 11 0 0 0 4.4-.9"/>',
   swap: '<path d="M4 8h16m-4-4 4 4-4 4M20 16H4m4-4-4 4 4 4"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14m-8 4v6m4-6v6"/>',
   restart: '<path d="M4 5v6h6M4.6 10a8 8 0 1 1 1.8 8.7"/>',

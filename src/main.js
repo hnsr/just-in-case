@@ -7,7 +7,7 @@ import { addIcons } from './icons.js'
 import { createInspector } from './inspector.js'
 import { createPreview } from './preview.js'
 import {
-  STORAGE_KEY, LEGACY_STORAGE_KEY, defaultProject, newProject, parseProject, projectJSON, evaluateProject,
+  STORAGE_KEY, LEGACY_STORAGE_KEY, defaultProject, newProject, parseProject, projectJSON, evaluateProject, screwClosureDraftIssues,
 } from './project.js'
 import { enclosureSTL } from './stl.js'
 
@@ -22,6 +22,7 @@ const bananaToggle = $('#banana-for-scale')
 const notices = $('#notice')
 const toast = $('#toast')
 const viewButtons = [...document.querySelectorAll('[data-view]')]
+const orientationButtons = [...document.querySelectorAll('[data-orientation]')]
 const numberFormat = new Intl.NumberFormat('en', { maximumFractionDigits: 3, useGrouping: false })
 
 let geometry
@@ -29,7 +30,7 @@ let preview
 let currentModel
 let lastResolvedRoot
 let selectedObject
-let modelObjectPaths = new WeakMap()
+let modelObjectPaths = new Map()
 let modelTimer
 let toastTimer
 let restoreError = false
@@ -102,17 +103,25 @@ function setPartOptions({ hasUpper, baseLabel, upperLabel }) {
 
 function displayModel(model) {
   // Draft objects keep their identity even if their tree indices change before the next preview.
-  modelObjectPaths = new WeakMap()
+  modelObjectPaths = new Map()
   function rememberObject(object, path) {
     modelObjectPaths.set(object, path)
     object.children.forEach((child, index) => rememberObject(child, path + '.children.' + index))
   }
   rememberObject(project.root, 'root')
   setPartOptions(model.layout)
-  preview?.setModel(model, modelObjectPaths.get(selectedObject))
+  preview?.setModel(model, modelObjectPaths.get(selectedObject), hiddenModelPaths())
   const { width, depth, height } = model.layout
   $('#size-value').textContent = [width, depth, height].map((value) => numberFormat.format(value)).join(' × ') + ' mm'
   if (preview) previewMessage.hidden = true
+}
+
+function hiddenModelPaths() {
+  const paths = new Set()
+  for (const [object, path] of modelObjectPaths) {
+    if (inspector.isHidden(object)) paths.add(path)
+  }
+  return paths
 }
 
 function commitModel(model, root) {
@@ -127,34 +136,38 @@ function applyEvaluation(evaluation) {
   const { issues } = evaluation
   inspector.applyEvaluation(evaluation)
   nameInput.setAttribute('aria-invalid', String(issues.some(({ field }) => field === 'name')))
-  const tail = issues.length > 3 ? ' ' + (issues.length - 3) + ' more fields need attention.' : ''
-  showNotice(issues.slice(0, 3).map(({ message }) => message).join(' ') + tail)
+  const messages = [...new Set(issues.map(({ message }) => message))]
+  const tail = messages.length > 3 ? ' ' + (messages.length - 3) + ' more issues need attention.' : ''
+  showNotice(messages.slice(0, 3).join(' ') + tail)
 }
 
 function updateModel() {
   const evaluation = evaluateProject(project)
-  applyEvaluation(evaluation)
-  if (evaluation.issues.length) {
+  const screwIssues = screwClosureDraftIssues(evaluation.root, evaluation.issues)
+  if (evaluation.issues.length && !screwIssues.length) {
+    applyEvaluation(evaluation)
     status('Unapplied changes', 'error')
     if (!currentModel && geometry && preview) previewMessage.textContent = 'Fix the highlighted settings to preview the enclosure.'
     return
   }
   if (!geometry) {
+    applyEvaluation(evaluation)
     status(loadError ? 'Geometry unavailable' : 'Starting editor…', loadError ? 'error' : 'pending')
     return
   }
   try {
-    const model = buildEnclosure(geometry, evaluation.root, { previewInvalidPlacements: true })
-    if (model.invalidPlacements.length) {
-      const issues = model.invalidPlacements.map(({ field, message, hint }) => ({ field, message, hint }))
-      applyEvaluation({ ...evaluation, issues })
+    const model = buildEnclosure(geometry, evaluation.root, { preview: true, screwIssues })
+    applyEvaluation({ ...evaluation, issues: model.previewIssues })
+    if (model.previewIssues.length) {
       displayModel(model)
-      status('Placement needs adjustment', 'error')
+      const placementOnly = model.previewIssues.every(({ field }) => field.endsWith('.placement'))
+      status(placementOnly ? 'Placement needs adjustment' : 'Screw closure needs adjustment', 'error')
       setReady(false)
       return
     }
     commitModel(model, evaluation.root)
   } catch (error) {
+    applyEvaluation(evaluation)
     showNotice(error.message)
     status('Unapplied changes', 'error')
     if (!currentModel && preview) previewMessage.textContent = 'Adjust the project to generate a solid enclosure.'
@@ -203,7 +216,7 @@ const inspector = createInspector(() => project, () => {
 }, scheduleUpdate, (object) => {
   selectedObject = object
   preview?.setSelection(modelObjectPaths.get(object))
-})
+}, () => preview?.setHidden(hiddenModelPaths()))
 
 addIcons(document)
 inspector.reset()
@@ -214,8 +227,10 @@ if (restoreError) showNotice('The saved project could not be loaded. The example
 try {
   preview = createPreview($('#scene'), $('#axes'))
 } catch {
-  previewMessage.textContent = '3D preview needs WebGL. You can still edit and export this project.'
-  for (const control of [...viewButtons, ...document.querySelectorAll('.viewport-tools button'), bananaToggle]) control.disabled = true
+  previewMessage.textContent = 'The live preview needs WebGL. You can still edit and export this project.'
+  for (const control of [...viewButtons, ...orientationButtons, ...document.querySelectorAll('.viewport-tools button'), bananaToggle]) {
+    control.disabled = true
+  }
 }
 preview?.setBananaVisible(bananaToggle.checked)
 bananaToggle.addEventListener('change', () => preview?.setBananaVisible(bananaToggle.checked))
@@ -272,6 +287,14 @@ exportOptions.addEventListener('click', (event) => {
 })
 
 for (const button of viewButtons) button.addEventListener('click', () => setView(button.dataset.view))
+for (const button of orientationButtons) {
+  button.addEventListener('click', () => {
+    const { orientation } = button.dataset
+    for (const option of orientationButtons) option.setAttribute('aria-pressed', String(option === button))
+    $('#preview-help').textContent = orientation === '3d' ? 'Drag to orbit · Scroll to zoom' : 'Scroll to zoom'
+    preview?.setOrientation(orientation)
+  })
+}
 $('#reset-camera').addEventListener('click', () => preview?.resetCamera())
 $('#toggle-grid').addEventListener('click', (event) => {
   const button = event.currentTarget

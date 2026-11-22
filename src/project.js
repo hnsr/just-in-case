@@ -142,33 +142,54 @@ function validateScrewClosure(root, feature, path, mark) {
     if (f.counterboreDiameter <= f.clearanceDiameter) issue('counterboreDiameter', 'The counterbore must be wider than the lid hole.')
   }
   if (feature.properties.layout === 'corners' && (f.insetX >= body.width / 2 || f.insetY >= body.depth / 2)) {
-    issue(f.insetX >= body.width / 2 ? 'insetX' : 'insetY', 'Keep the screw insets below half the corresponding enclosure dimension.')
+    if (f.insetX >= body.width / 2) issue('insetX', 'Keep the X inset below half the enclosure width.')
+    if (f.insetY >= body.depth / 2) issue('insetY', 'Keep the Y inset below half the enclosure depth.')
     return
   }
 
   const cavityInset = body.wall + (body.lip > 0 ? body.clearance + lidRimWidth(body) : 0)
   const diameter = f.counterboreDepth > 0 ? Math.max(f.diameter, f.counterboreDiameter) : f.diameter
   const positions = screwPositions(body, feature)
-  const cornerIssues = new Set()
+  const cornerIssues = new Map()
   positions.forEach((position, index) => {
-    const placementIssue = (message) => {
+    const placementIssue = (message, axes) => {
+      const fields = axes.length ? axes : ['X', 'Y']
       if (feature.properties.layout === 'custom') {
-        issue('positions.' + index + '.x', 'Screw ' + (index + 1) + ' ' + message)
+        for (const axis of fields) issue('positions.' + index + '.' + axis.toLowerCase(), 'Screw ' + (index + 1) + ' ' + message)
       } else {
-        cornerIssues.add(message)
+        for (const axis of fields) cornerIssues.set('inset' + axis + '|' + message, ['inset' + axis, 'Corner screws ' + message])
       }
     }
+    const outsideAxes = (inset) => {
+      const axes = []
+      if (Math.abs(position.x) > body.width / 2 - inset) axes.push('X')
+      if (Math.abs(position.y) > body.depth / 2 - inset) axes.push('Y')
+      return axes
+    }
     if (roomAt(position, body, cavityInset) < f.diameter / 2 + 0.25) {
-      placementIssue('must clear the inner walls and any lid lip.')
+      placementIssue('must clear the inner walls and any lid lip. Move inward or reduce the boss diameter.',
+        outsideAxes(cavityInset + f.diameter / 2 + 0.25))
     }
     if (f.counterboreDepth > 0 && roomAt(position, body, 0) < f.counterboreDiameter / 2 + 0.7) {
-      placementIssue('must leave material between the counterbore and the lid edge.')
+      placementIssue('must leave material between the counterbore and the lid edge. Move inward or reduce the counterbore diameter.',
+        outsideAxes(f.counterboreDiameter / 2 + 0.7))
     }
-    if (positions.slice(0, index).some((other) => Math.hypot(other.x - position.x, other.y - position.y) < diameter + 0.5)) {
-      placementIssue('must have at least 0.5 mm between neighboring bosses and head recesses.')
+    const neighbor = positions.slice(0, index).findIndex((other) => Math.hypot(other.x - position.x, other.y - position.y) < diameter + 0.5)
+    if (neighbor >= 0) {
+      const other = positions[neighbor]
+      placementIssue('must have at least 0.5 mm between neighboring bosses and head recesses. Move them farther apart or reduce their diameters.',
+        feature.properties.layout === 'custom' ? [] : [position.x !== other.x ? 'X' : 'Y'])
     }
   })
-  for (const message of cornerIssues) issue('insetX', 'Corner screws ' + message)
+  for (const [key, message] of cornerIssues.values()) issue(key, message)
+}
+
+export function screwClosureDraftIssues(root, issues) {
+  if (!root || !supportsScrewClosure(root)) return []
+  const index = root.features.findIndex(({ type }) => type === 'screw-closure')
+  if (index < 0 || root.features.slice(index + 1).some(({ type }) => type === 'screw-closure')) return []
+  const prefix = 'root.features.' + index + '.parameters.'
+  return issues.every(({ field }) => field.startsWith(prefix)) ? issues : []
 }
 
 function validateRoot(root, mark) {
@@ -292,8 +313,13 @@ export function evaluateProject(project) {
       next.properties.includeLid = object.properties.includeLid
     }
     if (type === 'repeater') {
-      demand(Object.hasOwn(REPEATER_OPERATIONS, object.properties.operation), 'Choose whether the repeater adds or cuts material.')
+      demand(Object.hasOwn(REPEATER_OPERATIONS, object.properties.operation), 'Choose whether the geometry adds or cuts material.')
       next.properties.operation = object.properties.operation
+    }
+    if (object.properties.reference !== undefined) {
+      demand(CHILD_TYPES[type]?.supportsReference && typeof object.properties.reference === 'boolean',
+        'Reference only must be a checkbox value on an object that supports it.')
+      next.properties.reference = object.properties.reference
     }
     next.parameters = fields(object.parameters, parameterFields(next), path + '.parameters')
 
@@ -309,7 +335,7 @@ export function evaluateProject(project) {
     }
     if (type === 'repeater') {
       const primitive = object.parameters.primitive
-      demand(record(primitive) && Object.hasOwn(PRIMITIVES, primitive.type), 'Choose a box, cylinder, or sphere for the repeater.')
+      demand(record(primitive) && Object.hasOwn(PRIMITIVES, primitive.type), 'Choose a box, cylinder, or sphere for the geometry.')
       next.parameters.primitive = {
         type: primitive.type,
         parameters: fields(primitive.parameters, PRIMITIVES[primitive.type].fields, path + '.parameters.primitive.parameters'),
@@ -354,7 +380,7 @@ export function evaluateProject(project) {
       }
     })
     const root = visit(project.root, 'root', 0, false)
-    if (issues.length === 0) validateRoot(root, mark)
+    if (!issues.length || screwClosureDraftIssues(root, issues).length) validateRoot(root, mark)
     return { root, issues, values }
   } catch (error) {
     mark('root', error.message)

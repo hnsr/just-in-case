@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 
-const LENGTH_MM = 180
+const LENGTH_MM = 205
 const RINGS = 104
 const SIDES = 36
 const profile = [

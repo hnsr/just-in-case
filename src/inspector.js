@@ -16,7 +16,7 @@ function parseNumberLiteral(text) {
   return Number.isFinite(value) ? value : undefined
 }
 
-function adjustDimension(event, { min, max }) {
+function adjustNumber(event, { min = -Infinity, max = Infinity, integer = false }) {
   const input = event.currentTarget
   if (input.ownerDocument.activeElement !== input || event.ctrlKey || event.metaKey || !event.cancelable) return
   const delta = event.deltaY || (event.shiftKey ? event.deltaX : 0)
@@ -26,8 +26,9 @@ function adjustDimension(event, { min, max }) {
   if (current === undefined) return
   event.preventDefault()
 
-  const step = event.shiftKey ? 0.1 : 1
-  const adjusted = current - Math.sign(delta) * step
+  const step = event.shiftKey && !integer ? 0.1 : 1
+  let adjusted = current - Math.sign(delta) * step
+  if (integer) adjusted = delta < 0 ? Math.floor(adjusted) : Math.ceil(adjusted)
   const next = Number(Math.min(max, Math.max(min, adjusted)).toFixed(12))
   if (next === current) return
   input.value = String(next)
@@ -68,18 +69,20 @@ function field(label, control, className, suffix) {
   return result
 }
 
-function textField(path, label, value, formula = false, unit) {
+function textField(path, label, value, numberSpec) {
   const input = element('input')
   input.type = 'text'
   input.value = typeof value === 'number' || typeof value === 'string' ? value : ''
-  input.maxLength = formula ? 160 : path.startsWith('variables.') ? 40 : 80
+  input.maxLength = numberSpec ? 160 : path.startsWith('variables.') ? 40 : 80
   input.spellcheck = false
   input.autocomplete = 'off'
   input.dataset.field = path
-  if (formula) input.dataset.formula = ''
+  const unit = numberSpec?.unit
   const suffix = unit ? element('span', '', unit) : null
-  const result = field(label, input, formula ? 'number-input' : 'text-input', suffix)
-  if (formula) {
+  const result = field(label, input, numberSpec ? 'number-input' : 'text-input', suffix)
+  if (numberSpec) {
+    input.dataset.formula = ''
+    input.addEventListener('wheel', (event) => adjustNumber(event, numberSpec), { passive: false })
     const resolved = element('span', 'resolved-value')
     resolved.setAttribute('aria-hidden', 'true')
     resolved.hidden = true
@@ -103,11 +106,7 @@ function selectField(path, label, options, value) {
 function fields(schema, values, path) {
   const grid = element('div', 'fields')
   for (const [key, spec] of Object.entries(schema)) {
-    const field = textField(path + '.' + key, spec.label, values[key], true, spec.unit)
-    if (spec.unit) {
-      field.querySelector('input').addEventListener('wheel', (event) => adjustDimension(event, spec), { passive: false })
-    }
-    grid.append(field)
+    grid.append(textField(path + '.' + key, spec.label, values[key], spec))
   }
   return grid
 }
@@ -133,7 +132,7 @@ function countDescendants(object) {
   return object.children.reduce((total, child) => total + 1 + countDescendants(child), 0)
 }
 
-export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect) {
+export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect, onVisibilityChange) {
   const tree = $('#object-tree')
   const selected = $('#object-inspector')
   const childPicker = $('#child-picker')
@@ -143,7 +142,9 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
   const list = $('#variable-list')
   const addVariable = $('#add-variable')
   const openSections = new Map()
+  let hiddenObjects = new WeakSet()
   let path = 'root'
+  let inheritsReference = false
   let childTarget
   let pendingRemoval
 
@@ -218,10 +219,13 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     const rootObject = getProject().root
     const limitReached = countDescendants(rootObject) + 1 >= MAX_OBJECTS
 
-    function branch(object, key, depth, parent) {
+    function branch(object, key, depth, parent, parentReference = false, parentHidden = false) {
       const detail = ROOT_TYPES[object.type] ?? CHILD_TYPES[object.type]
       const label = ownLabel(object)
+      const reference = parentReference || object.properties.reference === true
+      const hidden = parentHidden || hiddenObjects.has(object)
       const row = element('div', 'tree-row')
+      row.classList.toggle('is-hidden', hidden)
       const choose = button('', detail.icon, 'tree-object', () => {
         renderTree(true, object)
         renderSelected()
@@ -229,20 +233,34 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       })
       choose.append(element('span', 'tree-name', label))
       choose.title = label
-      if (object.type === 'repeater') {
-        const operation = REPEATER_OPERATIONS[object.properties.operation]
-        const marker = element('span', 'tree-operation', operation.treeLabel)
-        marker.dataset.operation = object.properties.operation
+      if (reference || object.type === 'repeater') {
+        const operation = reference ? 'reference' : object.properties.operation
+        const marker = element('span', 'tree-operation', reference ? 'Reference' : REPEATER_OPERATIONS[operation].treeLabel)
+        marker.dataset.operation = operation
         choose.append(marker)
-        choose.title += ' · ' + operation.label
+        choose.title += ' · ' + (reference ? 'Reference only' : REPEATER_OPERATIONS[operation].label)
       }
       choose.dataset.object = key
       row.style.setProperty('--depth', depth)
       if (object === selection) {
         path = key
+        inheritsReference = parentReference
         choose.setAttribute('aria-current', 'true')
       }
 
+      const eye = button('', hidden ? 'eyeOff' : 'eye', 'icon-button tree-action tree-visibility', () => {
+        if (hiddenObjects.has(object)) hiddenObjects.delete(object)
+        else hiddenObjects.add(object)
+        renderTree()
+        applyEvaluation(lastEvaluation)
+        tree.querySelector('[data-visibility="' + key + '"]').focus({ preventScroll: true })
+        onVisibilityChange()
+      })
+      const eyeLabel = parentHidden ? label + ' is hidden by its parent' : (hidden ? 'Show ' : 'Hide ') + label + ' in preview'
+      eye.dataset.visibility = key
+      eye.disabled = parentHidden
+      eye.setAttribute('aria-label', eyeLabel)
+      eye.title = eyeLabel
       const actions = element('div', 'tree-actions')
       const add = button('', 'plus', 'icon-button tree-action', (event) => openChildPicker(object, key, event.currentTarget))
       add.setAttribute('aria-label', 'Add child to ' + label)
@@ -258,14 +276,14 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
         remove.title = 'Remove object'
         actions.append(remove)
       }
-      row.append(choose, actions)
+      row.append(choose, eye, actions)
 
       const item = element('li')
       item.append(row)
       if (object.children.length) {
         const children = element('ul')
         object.children.forEach((child, index) => {
-          children.append(branch(child, key + '.children.' + index, depth + 1, object))
+          children.append(branch(child, key + '.children.' + index, depth + 1, object, reference, hidden))
         })
         item.append(children)
       }
@@ -293,7 +311,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       })
       remove.setAttribute('aria-label', 'Remove variable ' + entry.name)
       remove.title = 'Remove variable'
-      row.append(textField(key + '.name', 'Name', entry.name), textField(key + '.value', 'Value or formula', entry.value, true), remove)
+      row.append(textField(key + '.name', 'Name', entry.name), textField(key + '.value', 'Value or formula', entry.value, {}), remove)
       return row
     }))
     addIcons(list)
@@ -362,7 +380,11 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     } else if (type === 'screw-closure') {
       const options = element('div', 'feature-options')
       options.append(selectField(key + '.properties.layout', 'Screw layout', Object.entries(SCREW_LAYOUTS), properties.layout))
-      content.append(options)
+      const issue = element('p', 'field-hint feature-issue')
+      issue.hidden = true
+      issue.setAttribute('role', 'status')
+      issue.dataset.featureIssue = key
+      content.append(options, issue)
     }
     content.append(fields(featureFields(feature), parameters, key + '.parameters'))
     if (type === 'screw-closure') {
@@ -397,12 +419,36 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     if (!isRoot) {
       heading.append(textField(path + '.name', 'Object name', object.name))
     }
-    if (object.type === 'repeater') {
+    if (type.supportsReference) {
+      const properties = disclosure('Properties', path + '.properties', { open: true })
+      const reference = element('input')
+      reference.type = 'checkbox'
+      reference.checked = inheritsReference || object.properties.reference === true
+      reference.disabled = inheritsReference
+      const label = element('label', 'reference-option')
+      label.append(reference, 'Reference only')
       const options = Object.entries(REPEATER_OPERATIONS).map(([key, spec]) => [key, spec.label])
-      heading.append(
+      const operation = element('div')
+      operation.hidden = reference.checked
+      operation.append(
         selectField(path + '.properties.operation', 'Operation', options, object.properties.operation),
-        element('p', 'field-hint', 'The operation applies to the parent. Cuts remove material where the pattern overlaps it.'),
+        element('p', 'field-hint', 'The operation applies to the parent. Cuts remove material wherever the geometry overlaps it.'),
       )
+      const hint = element('p', 'field-hint', inheritsReference
+        ? 'Inherited from the parent.'
+        : 'This branch can float or overlap the case. It stays out of the STL.')
+      hint.hidden = !reference.checked
+      properties.content.append(label, hint, operation)
+      selected.append(properties.details)
+      reference.addEventListener('change', () => {
+        object.properties.reference = reference.checked
+        operation.hidden = reference.checked
+        hint.hidden = !reference.checked
+        renderTree()
+        onChange()
+      })
+    } else if (inheritsReference) {
+      heading.append(element('p', 'object-property', 'Reference inherited from the parent.'))
     }
 
     const parameterPanel = disclosure('Parameters', path + '.parameters', { glyph: 'sliders', open: true })
@@ -416,9 +462,14 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
         selectField(path + '.parameters.primitive.type', 'Primitive', Object.entries(PRIMITIVES).map(([key, spec]) => [key, spec.label]), primitive.type),
         fields(PRIMITIVES[primitive.type].fields, primitive.parameters, path + '.parameters.primitive.parameters'),
       )
-      parameterPanel.content.append(primitiveBox)
+      const { count, ...transforms } = parameterFields(object)
+      const repeatSettings = fields(transforms, object.parameters, path + '.parameters')
+      repeatSettings.dataset.repeatSettings = ''
+      repeatSettings.hidden = object.parameters.count === 1
+      parameterPanel.content.append(primitiveBox, fields({ count }, object.parameters, path + '.parameters'), repeatSettings)
+    } else {
+      parameterPanel.content.append(fields(parameterFields(object), object.parameters, path + '.parameters'))
     }
-    parameterPanel.content.append(fields(parameterFields(object), object.parameters, path + '.parameters'))
     if (object.type === 'pcb-mount') {
       parameterPanel.content.append(element('p', 'field-hint', 'Four clips support the board and grip two opposite edges.'))
     }
@@ -528,6 +579,11 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       output.hidden = resolved === undefined || typeof stored !== 'string'
       output.textContent = output.hidden ? '' : '= ' + formatter.format(resolved)
     }
+    const repeatSettings = selected.querySelector('[data-repeat-settings]')
+    if (repeatSettings) {
+      const count = evaluation.values.get(path + '.parameters.count')
+      repeatSettings.hidden = count === 1 && !repeatSettings.querySelector('[aria-invalid="true"]')
+    }
     for (const row of tree.querySelectorAll('[data-object]')) {
       const prefix = row.dataset.object
       row.classList.toggle('has-issue', evaluation.issues.some(({ field }) => field.startsWith(prefix + '.')))
@@ -541,6 +597,13 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       const hint = errors.get(path + '.placement')?.hint
       placementIssue.textContent = hint ?? ''
       placementIssue.hidden = !hint
+    }
+    for (const report of selected.querySelectorAll('[data-feature-issue]')) {
+      const key = report.dataset.featureIssue
+      const messages = evaluation.issues.filter(({ field }) => field === key || field.startsWith(key + '.'))
+        .map(({ message }) => message)
+      report.textContent = [...new Set(messages)].join(' ')
+      report.hidden = messages.length === 0
     }
     const variableError = evaluation.issues.some(({ field }) => field.startsWith('variables.'))
     variablesToggle.classList.toggle('has-issue', variableError)
@@ -588,6 +651,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
   return {
     reset() {
       path = 'root'
+      hiddenObjects = new WeakSet()
       openSections.clear()
       lastEvaluation = undefined
       pendingRemoval = undefined
@@ -598,5 +662,6 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       renderSelected()
     },
     applyEvaluation,
+    isHidden: (object) => hiddenObjects.has(object),
   }
 }
