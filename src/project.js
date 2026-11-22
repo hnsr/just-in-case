@@ -227,7 +227,13 @@ function validateRoot(root, mark) {
       issue('offset', 'must fit on the straight wall with 1 mm of room at each end.')
     }
     if (f.z - openingHeight / 2 < p.floor + 0.5 || f.z + openingHeight / 2 > wallTop - 1) {
-      issue('z', 'needs 0.5 mm above the floor and 1 mm below the top of the wall.')
+      if (feature.properties.placement === 'seam') {
+        const circular = feature.properties.shape === 'Circle'
+        issue(circular ? 'width' : 'height', 'needs 0.5 mm above the floor and 1 mm below the ceiling. Reduce the ' +
+          (circular ? 'diameter' : 'height') + ' or move the split seam.')
+      } else {
+        issue('z', 'needs 0.5 mm above the floor and 1 mm below the top of the wall.')
+      }
     }
   })
 }
@@ -276,20 +282,23 @@ export function evaluateProject(project) {
     }))
   }
 
-  function visitFeature(feature, path) {
+  function visitFeature(feature, path, root) {
     demand(record(feature) && Object.hasOwn(FEATURES, feature.type) && record(feature.properties), 'This project contains an unknown feature.')
     const { type } = feature
     let properties
     if (type === 'cutout') {
-      const { side, shape } = feature.properties
+      const { side, shape, placement = 'height' } = feature.properties
       demand(SIDES.includes(side) && SHAPES.includes(shape), 'A wall cutout is missing its wall or shape.')
-      properties = { side, shape }
+      demand(placement === 'height' || (placement === 'seam' && root.type === 'split'),
+        'Choose a wall cutout placement supported by the enclosure.')
+      properties = { side, shape, placement }
     } else {
       const { layout } = feature.properties
       demand(Object.hasOwn(SCREW_LAYOUTS, layout), 'Choose a screw closure layout.')
       properties = { layout }
     }
     const parameters = fields(feature.parameters, featureFields(feature), path + '.parameters')
+    if (properties.placement === 'seam') parameters.z = root.parameters.seam
     if (properties.layout === 'custom') {
       const { positions } = feature.parameters
       demand(Array.isArray(positions) && positions.length >= 1 && positions.length <= MAX_SCREWS, 'A custom screw closure needs 1 to ' + MAX_SCREWS + ' positions.')
@@ -354,7 +363,7 @@ export function evaluateProject(project) {
       if (pilotDepth > height) mark(path + '.parameters.pilotDepth', 'The pilot hole must stop at or above the bottom of the post.')
     }
     if (root) hasUpper = type === 'split' || next.properties.includeLid
-    next.features = object.features.map((feature, index) => visitFeature(feature, path + '.features.' + index))
+    next.features = object.features.map((feature, index) => visitFeature(feature, path + '.features.' + index, next))
     next.children = object.children.map((child, index) => visit(child, path + '.children.' + index, depth + 1, hasUpper))
     return next
   }

@@ -21,7 +21,7 @@ Use **Change enclosure** to choose a lidded, base-only, or split case. Confirmin
 
 - Open **Variables** beside the project name to edit project-wide numbers and formulas. Use a name like `boardWidth` in a field such as `boardWidth + 16`. Formulas support parentheses and the operators `+`, `-`, `*`, `/`, `%`, and `^`. Dimensions are in millimetres and rotations are in degrees.
 - Focus a field containing a plain number and scroll up or down to adjust it by one. Hold **Shift** for 0.1-unit steps in fields that allow decimals.
-- **Wall cutouts** can cross the seam on a split enclosure. Their offsets start at the midpoint of the chosen wall and their heights are measured from the bottom of the enclosure.
+- **Wall cutouts** are positioned from the midpoint of the chosen wall and the bottom of the enclosure. In a split enclosure, choose **At split seam** to center the opening on the seam and open the lip so the halves can close around a cable.
 - **Screw closure** adds matching base bosses and lid holes to a lidded enclosure. Use four adjustable corner positions or a custom layout. Set counterbore depth to 0 for plain lid holes.
 - **PCB screw mounts** add four posts with blind pilot holes. Set the board's X and Y hole spacing, then position and rotate the pattern as a child object. Add a separate mount for each board.
 - **PCB press-fit mounts** add four clips to support and grip the edges of a board. Size the clips to your board and printer tolerances.

@@ -86,7 +86,7 @@ export function buildEnclosure({ Manifold }, root, { preview = false, screwIssue
     return subtract(prism(0, height), [prism(p.wall, height - floor + BOOLEAN_OVERLAP, floor)])
   }
 
-  function opening(feature) {
+  function opening(feature, { lipRelief = false } = {}) {
     const { side, shape } = feature.properties
     const { width, height, offset, z } = feature.parameters
     const horizontal = side === 'Front' || side === 'Back'
@@ -94,8 +94,13 @@ export function buildEnclosure({ Manifold }, root, { preview = false, screwIssue
     const reach = root.type === 'split' && p.lip > 0 ? p.wall + p.clearance + lidRimWidth(p) : p.wall
     const length = reach + 2 * BOOLEAN_OVERLAP
     const center = sign * ((horizontal ? p.depth : p.width) / 2 - reach / 2)
-    const position = horizontal ? [offset, center, z] : [center, offset, z]
-    if (shape === 'Rectangle') return box(horizontal ? [width, length, height] : [length, width, height], position)
+    const centerZ = lipRelief ? z - p.lip / 2 : z
+    const position = horizontal ? [offset, center, centerZ] : [center, offset, centerZ]
+    if (lipRelief || shape === 'Rectangle') {
+      const cutWidth = lipRelief ? width + 2 * BOOLEAN_OVERLAP : width
+      const cutHeight = lipRelief ? p.lip + 2 * BOOLEAN_OVERLAP : height
+      return box(horizontal ? [cutWidth, length, cutHeight] : [length, cutWidth, cutHeight], position)
+    }
     return move(rotate(cylinder(length, width / 2, 64), horizontal ? [90, 0, 0] : [0, 90, 0]), position)
   }
 
@@ -354,7 +359,8 @@ export function buildEnclosure({ Manifold }, root, { preview = false, screwIssue
   const flipUpper = (solid) => move(rotate(solid, [180, 0, 0]), [0, 0, layout.height])
 
   try {
-    const openings = root.features.filter(({ type }) => type === 'cutout').map(opening)
+    const cutoutFeatures = root.features.filter(({ type }) => type === 'cutout')
+    const openings = cutoutFeatures.map((feature) => opening(feature))
     const baseShell = tray(layout.baseHeight, p.floor)
     const baseChildren = childGroups(root.children, 'root', {
       part: 'base', surface: p.floor, availableHeight: layout.height - (layout.hasUpper ? p.thickness : 0),
@@ -370,7 +376,11 @@ export function buildEnclosure({ Manifold }, root, { preview = false, screwIssue
       const start = layout.upperHeight - BOOLEAN_OVERLAP
       const outer = prism(fit, p.lip + BOOLEAN_OVERLAP, start)
       const inner = prism(fit + lidRimWidth(p), p.lip + 3 * BOOLEAN_OVERLAP, start - BOOLEAN_OVERLAP)
-      upper = union(upper, [subtract(outer, [inner])])
+      const rim = subtract(outer, [inner])
+      // Open the lip to its free edge while the bore still defines the outer wall profile.
+      const reliefs = cutoutFeatures.filter(({ properties }) => properties.placement === 'seam')
+        .map((feature) => flipUpper(opening(feature, { lipRelief: true })))
+      upper = union(upper, [subtract(rim, reliefs)])
       if (root.type === 'split') {
         // A shoulder joins the inset lip to the upper half's outer walls.
         const depth = Math.min(p.wall, 1.2)

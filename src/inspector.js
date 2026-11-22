@@ -1,5 +1,5 @@
 import {
-  ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES,
+  ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES, CUTOUT_PLACEMENTS,
   SCREW_LAYOUTS, SCREW_POSITION_FIELDS, enclosureLayout, featureFields, makePrimitive, parameterFields,
   screwPositions, supportsScrewClosure,
 } from './definitions.js'
@@ -363,12 +363,14 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     return list
   }
 
-  function featureCard(feature, index) {
+  function featureCard(feature, index, enclosureType) {
     const key = path + '.features.' + index
     const { type, properties, parameters } = feature
     const cutout = type === 'cutout'
+    const atSeam = cutout && properties.placement === 'seam'
     const title = cutout ? properties.side + ' wall cutout' : FEATURES[type].label
-    const { details, content } = disclosure(title, key, { summary: cutout ? properties.shape : undefined })
+    const summary = cutout ? properties.shape + (atSeam ? ' · Seam' : '') : undefined
+    const { details, content } = disclosure(title, key, { summary })
     details.classList.add('feature-card')
     if (cutout) {
       const options = element('div', 'fields feature-options')
@@ -377,16 +379,23 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
         selectField(key + '.properties.shape', 'Shape', SHAPES.map((shape) => [shape, shape]), properties.shape),
       )
       content.append(options)
+      if (enclosureType === 'split') {
+        const placement = element('div', 'feature-options')
+        placement.append(selectField(key + '.properties.placement', 'Placement',
+          Object.entries(CUTOUT_PLACEMENTS), properties.placement ?? 'height'))
+        content.append(placement)
+      }
     } else if (type === 'screw-closure') {
       const options = element('div', 'feature-options')
       options.append(selectField(key + '.properties.layout', 'Screw layout', Object.entries(SCREW_LAYOUTS), properties.layout))
-      const issue = element('p', 'field-hint feature-issue')
-      issue.hidden = true
-      issue.setAttribute('role', 'status')
-      issue.dataset.featureIssue = key
-      content.append(options, issue)
+      content.append(options)
     }
-    content.append(fields(featureFields(feature), parameters, key + '.parameters'))
+    const issue = element('p', 'field-hint feature-issue')
+    issue.hidden = true
+    issue.setAttribute('role', 'status')
+    issue.dataset.featureIssue = key
+    content.append(issue, fields(featureFields(feature), parameters, key + '.parameters'))
+    if (atSeam) content.append(element('p', 'field-hint', 'Follows the lower half height and opens the lip at this cutout.'))
     if (type === 'screw-closure') {
       content.append(element('p', 'field-hint', 'The base bosses reach the lid. Set counterbore depth to 0 for plain lid holes.'))
       if (properties.layout === 'custom') content.append(customScrewFields(feature, key))
@@ -501,7 +510,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       if (object.features.some(({ type }) => type === 'cutout')) {
         featurePanel.content.append(element('p', 'field-hint leading-hint', 'Wall offsets start at the midpoint. Positive follows X on front and back, or Y on left and right.'))
       }
-      object.features.forEach((feature, index) => featurePanel.content.append(featureCard(feature, index)))
+      object.features.forEach((feature, index) => featurePanel.content.append(featureCard(feature, index, object.type)))
       const choices = Object.entries(FEATURES)
         .filter(([type]) => type !== 'screw-closure' || (supportsScrewClosure(object) && !object.features.some((feature) => feature.type === type)))
         .map(([type, spec]) => [type, spec.label])
@@ -550,6 +559,11 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       const card = key.slice(0, key.lastIndexOf('.properties.'))
       const feature = objectAt(getProject(), card)
       feature.parameters.height ??= FEATURES.cutout.fields.height.value
+    }
+    if (key.endsWith('.properties.placement') && value === 'height') {
+      const card = key.slice(0, key.lastIndexOf('.properties.'))
+      const project = getProject()
+      objectAt(project, card).parameters.z ??= project.root.parameters.seam
     }
     if (control.tagName === 'SELECT') {
       renderSelected()

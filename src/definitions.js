@@ -104,6 +104,7 @@ export const FEATURES = {
 
 export const SIDES = ['Front', 'Right', 'Back', 'Left']
 export const SHAPES = ['Rectangle', 'Circle']
+export const CUTOUT_PLACEMENTS = { height: 'At height', seam: 'At split seam' }
 export const SCREW_LAYOUTS = { corners: 'Four corners', custom: 'Custom positions' }
 export const SCREW_POSITION_FIELDS = { x: mm('X position', 0, -200, 200), y: mm('Y position', 0, -200, 200) }
 
@@ -139,9 +140,10 @@ export function featureFields(feature) {
     const { insetX, insetY, ...shared } = FEATURES['screw-closure'].fields
     return shared
   }
-  if (feature.type !== 'cutout' || feature.properties.shape !== 'Circle') return FEATURES[feature.type].fields
-  const { width, offset, z } = FEATURES.cutout.fields
-  return { width: { ...width, label: 'Diameter' }, offset, z }
+  if (feature.type !== 'cutout') return FEATURES[feature.type].fields
+  const { width, height, offset, z } = FEATURES.cutout.fields
+  const size = feature.properties.shape === 'Circle' ? { width: { ...width, label: 'Diameter' } } : { width, height }
+  return { ...size, offset, ...(feature.properties.placement === 'seam' ? {} : { z }) }
 }
 
 export function fieldDefaults(fields) {

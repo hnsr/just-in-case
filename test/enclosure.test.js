@@ -277,6 +277,50 @@ test('split halves stay closed and a seam cutout subtracts from both', () => {
   assert(upper.volume < inspectSTL(enclosureSTL(before, 'upper')).volume)
 })
 
+test('seam cutouts follow the split and clear the upper lip across the cable width', () => {
+  const project = newProject('split')
+  project.root.parameters.lip = 5
+  const exit = cutout('Right', 'Circle', 6, 6, 12, 'unusedCenter')
+  exit.properties.placement = 'seam'
+  project.root.features.push(exit)
+  const saved = parseProject(projectJSON(project))
+  assert.equal(saved.root.features[0].properties.placement, 'seam')
+
+  for (const seam of [14, 18]) {
+    saved.root.parameters.seam = seam + ' + 0'
+    const model = build(saved)
+    const upperSeam = model.layout.upperHeight
+    assert(hasVertex(model.base, 50, 12, seam - 3))
+    assert(hasVertex(model.upper, 50, -12, upperSeam - 3))
+
+    const { vertices, stride, triangles } = model.upper
+    const surface = new THREE.BufferGeometry()
+      .setAttribute('position', new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(vertices, stride), 3, 0))
+      .setIndex(new THREE.BufferAttribute(triangles, 1))
+    const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide })
+    const upper = new THREE.Mesh(surface, material)
+    function hitsWall(y, z) {
+      const ray = new THREE.Raycaster(new THREE.Vector3(51, -y, z), new THREE.Vector3(-1, 0, 0), 0, 10)
+      return ray.intersectObject(upper).length > 0
+    }
+
+    for (const depth of [0.2, 2.5, 4.8]) {
+      for (const y of [9.2, 12, 14.8]) {
+        assert(!hitsWall(y, upperSeam + depth), 'the full cable width clears the lip all the way to its edge')
+      }
+    }
+    assert(hitsWall(16, upperSeam + 4.8), 'lip material beside the opening still locates the halves')
+    assert(hitsWall(14.8, upperSeam - 2.5), 'the outer wall retains the round bore profile')
+    surface.dispose()
+    material.dispose()
+    inspectSTL(enclosureSTL(model, 'both'))
+  }
+
+  saved.root.features[0].parameters.width = 30
+  const { issues } = evaluateProject(saved)
+  assert(issues.some(({ field, message }) => field.endsWith('.width') && /move the split seam/.test(message)))
+})
+
 test('a lidded enclosure can be instantiated as a base-only project', () => {
   const project = newProject('lidded', false)
   const model = build(parseProject(projectJSON(project)))
