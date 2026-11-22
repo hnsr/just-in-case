@@ -438,7 +438,10 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       const hint = depth === 1
         ? 'X and Y start at the surface center. Z points into the case, along the print orientation of that part.'
         : 'Offsets and rotation are relative to the parent object’s origin.'
-      placement.content.append(fields(PLACEMENT_FIELDS, object.placement, path + '.placement'), element('p', 'field-hint', hint))
+      const issue = element('p', 'field-hint placement-issue')
+      issue.hidden = true
+      issue.setAttribute('role', 'status')
+      placement.content.append(fields(PLACEMENT_FIELDS, object.placement, path + '.placement'), issue, element('p', 'field-hint', hint))
       selected.append(placement.details)
     }
 
@@ -512,11 +515,11 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
   function applyEvaluation(evaluation) {
     if (!evaluation) return
     lastEvaluation = evaluation
-    const errors = new Map(evaluation.issues.map((issue) => [issue.field, issue.message]))
+    const errors = new Map(evaluation.issues.map((issue) => [issue.field, issue]))
     for (const input of document.querySelectorAll('#object-inspector [data-field], #variable-list [data-field]')) {
       const key = input.dataset.field
       input.setAttribute('aria-invalid', String(errors.has(key)))
-      if (errors.has(key)) input.title = errors.get(key)
+      if (errors.has(key)) input.title = errors.get(key).message
       else input.removeAttribute('title')
       const output = input.closest('.field').querySelector('.resolved-value')
       if (!output) continue
@@ -531,7 +534,13 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     }
     for (const details of selected.querySelectorAll('[data-section]')) {
       const key = details.dataset.section
-      details.classList.toggle('has-issue', evaluation.issues.some(({ field }) => field.startsWith(key + '.')))
+      details.classList.toggle('has-issue', errors.has(key) || evaluation.issues.some(({ field }) => field.startsWith(key + '.')))
+    }
+    const placementIssue = selected.querySelector('.placement-issue')
+    if (placementIssue) {
+      const hint = errors.get(path + '.placement')?.hint
+      placementIssue.textContent = hint ?? ''
+      placementIssue.hidden = !hint
     }
     const variableError = evaluation.issues.some(({ field }) => field.startsWith('variables.'))
     variablesToggle.classList.toggle('has-issue', variableError)

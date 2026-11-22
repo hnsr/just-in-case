@@ -100,10 +100,8 @@ function setPartOptions({ hasUpper, baseLabel, upperLabel }) {
   setView(hasUpper ? viewMode : 'base')
 }
 
-function commitModel(model, root) {
-  currentModel = model
-  lastResolvedRoot = root
-  // Draft objects keep their identity even if their tree indices change before the next valid model.
+function displayModel(model) {
+  // Draft objects keep their identity even if their tree indices change before the next preview.
   modelObjectPaths = new WeakMap()
   function rememberObject(object, path) {
     modelObjectPaths.set(object, path)
@@ -115,6 +113,12 @@ function commitModel(model, root) {
   const { width, depth, height } = model.layout
   $('#size-value').textContent = [width, depth, height].map((value) => numberFormat.format(value)).join(' × ') + ' mm'
   if (preview) previewMessage.hidden = true
+}
+
+function commitModel(model, root) {
+  displayModel(model)
+  currentModel = model
+  lastResolvedRoot = root
   saveLocally()
   setReady(true)
 }
@@ -140,7 +144,16 @@ function updateModel() {
     return
   }
   try {
-    commitModel(buildEnclosure(geometry, evaluation.root), evaluation.root)
+    const model = buildEnclosure(geometry, evaluation.root, { previewInvalidPlacements: true })
+    if (model.invalidPlacements.length) {
+      const issues = model.invalidPlacements.map(({ field, message, hint }) => ({ field, message, hint }))
+      applyEvaluation({ ...evaluation, issues })
+      displayModel(model)
+      status('Placement needs adjustment', 'error')
+      setReady(false)
+      return
+    }
+    commitModel(model, evaluation.root)
   } catch (error) {
     showNotice(error.message)
     status('Unapplied changes', 'error')

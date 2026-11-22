@@ -246,6 +246,7 @@ details[open] .section-icon { color: var(--accent); }
 .select-input select { appearance: none; padding-right: 1.5rem; }
 .select-input svg { width: 0.82rem; height: 0.82rem; }
 .field-hint { color: var(--subtle); margin-top: 0.7rem; font-size: 0.79rem; line-height: 1.45; }
+.placement-issue { color: var(--error); }
 .resolved-value { color: #e3b982; font: 0.74rem ui-monospace, monospace; }
 .field-hint code { color: #d9bc9a; }
 .leading-hint { margin: 0 0 0.72rem; }

@@ -170,6 +170,20 @@ export function createPreview(container, axisCanvas) {
   const base = partObject(0xdf9137)
   const lid = partObject(0xf4aa49)
   const cutterOutline = createCutterOutline()
+  const placementGuides = { base: new THREE.Group(), upper: new THREE.Group() }
+  const invalidSurface = new THREE.MeshStandardMaterial({
+    color: 0xf03944, emissive: 0x70121e, roughness: 0.68,
+  })
+  const invalidOccluded = new THREE.MeshBasicMaterial({
+    color: 0xff5967,
+    toneMapped: false,
+    transparent: true,
+    opacity: 0.42,
+    depthFunc: THREE.GreaterDepth,
+    depthWrite: false,
+  })
+  base.group.add(placementGuides.base)
+  lid.group.add(placementGuides.upper)
   scene.add(base.group, lid.group)
 
   const grid = new THREE.GridHelper(400, 40, 0x5e5650, 0x343239)
@@ -231,6 +245,21 @@ export function createPreview(container, axisCanvas) {
     part.group.add(cutterOutline.line)
   }
 
+  function updatePlacementGuides() {
+    for (const guide of Object.values(placementGuides)) {
+      for (const object of guide.children) object.geometry.dispose()
+      guide.clear()
+    }
+    for (const { part, mesh } of model.invalidPlacements) {
+      const geometry = toGeometry(mesh)
+      const object = new THREE.Mesh(geometry, invalidSurface)
+      const ghost = new THREE.Mesh(geometry, invalidOccluded)
+      ghost.renderOrder = 2
+      object.add(ghost)
+      placementGuides[part].add(object)
+    }
+  }
+
   function aimCamera(width, depth) {
     const target = new THREE.Vector3(0, visibleHeight * 0.48, 0)
     framingRadius = 0
@@ -239,6 +268,12 @@ export function createPreview(container, axisCanvas) {
     if (cutterBounds && part?.visible) {
       part.updateWorldMatrix(true, false)
       referenceBounds.union(cutterBounds.clone().applyMatrix4(part.matrixWorld))
+    }
+    for (const guide of Object.values(placementGuides)) {
+      if (guide.children.length && guide.parent.visible) {
+        guide.updateWorldMatrix(true, false)
+        referenceBounds.expandByObject(guide)
+      }
     }
     if (banana?.visible) {
       referenceBounds.union(banana.geometry.boundingBox.clone().translate(banana.position))
@@ -323,6 +358,7 @@ export function createPreview(container, axisCanvas) {
       selectedPath = path
       base.set(model.base, selectedPath)
       if (model.upper) lid.set(model.upper, selectedPath)
+      updatePlacementGuides()
       updateCutter()
       arrange()
     },

@@ -49,12 +49,13 @@ function hasClosedEdges(vertices, triangles, stride) {
   return [...edges.values()].every((balance) => balance === 0)
 }
 
-export function buildEnclosure({ Manifold }, root) {
+export function buildEnclosure({ Manifold }, root, { previewInvalidPlacements = false } = {}) {
   const p = root.parameters
   const layout = enclosureLayout(root)
   const owned = []
   const objectSources = new Map()
   const cutters = new Map()
+  const invalidPlacements = []
   const own = (solid) => {
     owned.push(solid)
     return solid
@@ -184,9 +185,10 @@ export function buildEnclosure({ Manifold }, root) {
     return place(subtract(union(solid, groups.adds), groups.cuts))
   }
 
-  function childGroups(children, path, { part, surface = 0, toPart = (solid) => solid }) {
+  function childGroups(children, path, { part, surface = 0, toPart = (solid) => solid, availableHeight }) {
     const adds = []
     const cuts = []
+    const envelope = availableHeight === undefined ? null : prism(0, availableHeight)
     children.forEach((object, index) => {
       if (path === 'root' && object.placement.part !== part) return
       const key = path + '.children.' + index
@@ -195,6 +197,24 @@ export function buildEnclosure({ Manifold }, root) {
       const cutting = object.properties.operation === 'cut'
       if (result.status() !== 'NoError' || (!cutting && result.isEmpty())) {
         throw new Error(object.name + ' could not be made into usable geometry.')
+      }
+      if (!cutting && envelope && subtract(result, [envelope]).volume() > 0.005) {
+        const label = part === 'base' ? layout.baseLabel : layout.upperLabel
+        const message = '“' + object.name + '” on the ' + label.toLowerCase() + ' extends outside the assembled case.'
+        if (!previewInvalidPlacements) throw new Error(message)
+        const { min, max } = result.boundingBox()
+        const field = key + '.placement'
+        const hint = placementHint(min, max, availableHeight)
+        const { vertProperties, triVerts, numProp } = own(result.calculateNormals(0, 45)).getMesh()
+        invalidPlacements.push({
+          field, message, hint, part,
+          mesh: { vertices: new Float32Array(vertProperties), triangles: new Uint32Array(triVerts), stride: numProp },
+        })
+        // Cutters nested under this object only affect the omitted solid.
+        for (const path of cutters.keys()) {
+          if (path.startsWith(key + '.')) cutters.delete(path)
+        }
+        return
       }
       if (cutting && !result.isEmpty()) {
         // Capture the full cutter in its part's coordinates before the parent subtracts it.
@@ -214,14 +234,26 @@ export function buildEnclosure({ Manifold }, root) {
     return { adds, cuts }
   }
 
-  function ensureInside(adds, availableHeight, name) {
-    if (!adds.length) return
-    const envelope = prism(0, availableHeight)
-    for (const shape of adds) {
-      if (subtract(shape, [envelope]).volume() > 0.005) {
-        throw new Error('An object attached to the ' + name.toLowerCase() + ' extends outside the assembled case. Adjust its dimensions or placement.')
+  function placementHint(min, max, height) {
+    const tolerance = 0.001
+    const hints = []
+    for (const [axis, limit] of [[0, p.width / 2], [1, p.depth / 2]]) {
+      const lower = min[axis] < -limit - tolerance
+      const upper = max[axis] > limit + tolerance
+      const label = axis === 0 ? 'X' : 'Y'
+      if (lower && upper) hints.push('Reduce the span along ' + label + '.')
+      else if (lower || upper) {
+        hints.push((lower ? 'Increase ' : 'Decrease ') + label + ' offset or reduce the span along ' + label + '.')
       }
     }
+    if (min[2] < -tolerance && max[2] > height + tolerance) {
+      hints.push('Reduce the height of the object or pattern.')
+    } else if (min[2] < -tolerance) {
+      hints.push('Increase Z offset to bring it inside the mounting face.')
+    } else if (max[2] > height + tolerance) {
+      hints.push('Reduce its height or decrease Z offset to clear the opposite face.')
+    }
+    return hints.join(' ') || 'Move it away from the rounded corner or reduce its span.'
   }
 
   function mesh(solid, label) {
@@ -260,8 +292,9 @@ export function buildEnclosure({ Manifold }, root) {
 
   try {
     const openings = root.features.filter(({ type }) => type === 'cutout').map(opening)
-    const baseChildren = childGroups(root.children, 'root', { part: 'base', surface: p.floor })
-    ensureInside(baseChildren.adds, layout.height - (layout.hasUpper ? p.thickness : 0), layout.baseLabel)
+    const baseChildren = childGroups(root.children, 'root', {
+      part: 'base', surface: p.floor, availableHeight: layout.height - (layout.hasUpper ? p.thickness : 0),
+    })
     const closureFeature = root.features.find(({ type }) => type === 'screw-closure')
     const closure = closureFeature ? screwClosure(closureFeature) : null
     if (closure) {
@@ -271,7 +304,7 @@ export function buildEnclosure({ Manifold }, root) {
     }
     const base = subtract(union(tray(layout.baseHeight, p.floor), baseChildren.adds), [...openings, ...baseChildren.cuts])
     const baseMesh = mesh(base, layout.baseLabel)
-    if (!layout.hasUpper) return { base: baseMesh, upper: null, layout, cutters }
+    if (!layout.hasUpper) return { base: baseMesh, upper: null, layout, cutters, invalidPlacements }
 
     let upper = root.type === 'split' ? tray(layout.upperHeight, p.thickness) : prism(0, p.thickness)
     if (p.lip > 0) {
@@ -290,8 +323,9 @@ export function buildEnclosure({ Manifold }, root) {
         upper = union(upper, [shoulder])
       }
     }
-    const upperChildren = childGroups(root.children, 'root', { part: 'upper', surface: p.thickness })
-    ensureInside(upperChildren.adds, layout.height - p.floor, layout.upperLabel)
+    const upperChildren = childGroups(root.children, 'root', {
+      part: 'upper', surface: p.thickness, availableHeight: layout.height - p.floor,
+    })
     if (closure) {
       checkScrewClearance(closure.lidFootprint, [...upperChildren.adds, ...upperChildren.cuts], 'lid')
       // A lid-side object can reach into the space filled by a base boss.
@@ -304,7 +338,7 @@ export function buildEnclosure({ Manifold }, root) {
     if (own(base.intersect(flipUpper(upper))).volume() > 0.005) {
       throw new Error('The parts intersect when assembled. Check the lip dimensions and any objects near the mating edge.')
     }
-    return { base: baseMesh, upper: upperMesh, layout, cutters }
+    return { base: baseMesh, upper: upperMesh, layout, cutters, invalidPlacements }
   } finally {
     for (const solid of owned.reverse()) solid.delete()
   }

@@ -1,4 +1,5 @@
 export function enclosureSTL(model, part) {
+  if (model.invalidPlacements?.length) throw new Error(model.invalidPlacements[0].message)
   const separation = (model.layout.width + 8) / 2
   const parts = {
     base: [[model.base, 0]],

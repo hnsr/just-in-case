@@ -475,3 +475,36 @@ test('bad placements, kissing cutouts, and colliding parts are rejected before e
   split.root.children.push(base, upper)
   assert.throws(() => build(split), /intersect when assembled/)
 })
+
+test('the preview keeps an out-of-bounds lid repeater at its draft placement until it fits', () => {
+  const project = newProject()
+  const repeater = makeChild('repeater')
+  repeater.placement = { part: 'upper', x: 49, y: -20, z: 0, angle: 90 }
+  project.root.children.push(repeater)
+  const preview = () => {
+    const { root, issues } = evaluateProject(project)
+    assert.deepEqual(issues, [])
+    return buildEnclosure(geometry, root, { previewInvalidPlacements: true })
+  }
+
+  const draft = preview()
+  const [issue] = draft.invalidPlacements
+  assert.equal(draft.invalidPlacements.length, 1)
+  assert.equal(issue.part, 'upper')
+  assert.equal(issue.field, 'root.children.0.placement')
+  assert.match(issue.message, /Geometry repeater.*lid.*outside the assembled case/)
+  assert.match(issue.hint, /Decrease X offset/)
+  assert(hasVertex(issue.mesh, 51.5, 12.5, 7.35), 'the guide preserves lid coordinates and the rotated copies')
+  assert(draft.upper.runs.every(({ path }) => path === 'root'))
+  assert.throws(() => enclosureSTL(draft, 'both'), /outside the assembled case/)
+  assert.throws(() => build(project), /outside the assembled case/)
+
+  repeater.placement.x = 12
+  repeater.placement.z = -4
+  assert.match(preview().invalidPlacements[0].hint, /Increase Z offset/)
+  repeater.placement.z = 0
+  const fixed = preview()
+  assert.deepEqual(fixed.invalidPlacements, [])
+  assert(fixed.upper.runs.some(({ path }) => path === 'root.children.0'))
+  inspectSTL(enclosureSTL(fixed, 'both'))
+})
