@@ -73,6 +73,13 @@ function hasVertex(mesh, x, y, z) {
   return false
 }
 
+function raycastSurface({ vertices, stride, triangles }) {
+  const surface = new THREE.BufferGeometry()
+    .setAttribute('position', new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(vertices, stride), 3, 0))
+    .setIndex(new THREE.BufferAttribute(triangles, 1))
+  return new THREE.Mesh(surface, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }))
+}
+
 test('the default base and lid export as closed meshes on the print bed', () => {
   const model = build(defaultProject())
   const base = inspectSTL(enclosureSTL(model, 'base'))
@@ -277,6 +284,38 @@ test('split halves stay closed and a seam cutout subtracts from both', () => {
   assert(upper.volume < inspectSTL(enclosureSTL(before, 'upper')).volume)
 })
 
+test('the split lip has a 45 degree print-side shoulder and preserves its mating faces', () => {
+  for (const parameters of [{ radius: 5 }, { radius: 3 }, { radius: 3, seam: 27.9, clearance: 2 }]) {
+    const project = newProject('split')
+    const p = Object.assign(project.root.parameters, parameters)
+    const model = build(project)
+    const top = model.layout.upperHeight
+    const upper = raycastSurface(model.upper)
+    function sideHits(z) {
+      const ray = new THREE.Raycaster(new THREE.Vector3(0, 1.3, z), new THREE.Vector3(1, 0, 0))
+      return ray.intersectObject(upper).map(({ point }) => point.x)
+    }
+    const closeTo = (actual, expected) => assert(Math.abs(actual - expected) < 0.001, actual + ' is not close to ' + expected)
+
+    closeTo(sideHits(top - 1.1)[0] - sideHits(top - 0.3)[0], 0.8)
+    const fitFace = p.width / 2 - p.wall - p.clearance
+    const [lipInside, lipOutside] = sideHits(top + p.lip / 2)
+    closeTo(lipInside, fitFace - 1.6)
+    closeTo(lipOutside, fitFace)
+    inspectSTL(enclosureSTL(model, 'both'))
+    const stl = new DataView(enclosureSTL(model, 'upper'))
+    for (let offset = 84; offset < stl.byteLength; offset += 50) {
+      const normalZ = stl.getFloat32(offset + 8, true)
+      const height = stl.getFloat32(offset + 20, true)
+      if (normalZ >= 0 || height === 0) continue
+      const horizontal = Math.hypot(stl.getFloat32(offset, true), stl.getFloat32(offset + 4, true))
+      assert(-normalZ <= horizontal + 0.001, 'sloped faces stay printable through rounded and square corners')
+    }
+    upper.geometry.dispose()
+    upper.material.dispose()
+  }
+})
+
 test('seam cutouts follow the split and clear the upper lip across the cable width', () => {
   const project = newProject('split')
   project.root.parameters.lip = 5
@@ -293,12 +332,7 @@ test('seam cutouts follow the split and clear the upper lip across the cable wid
     assert(hasVertex(model.base, 50, 12, seam - 3))
     assert(hasVertex(model.upper, 50, -12, upperSeam - 3))
 
-    const { vertices, stride, triangles } = model.upper
-    const surface = new THREE.BufferGeometry()
-      .setAttribute('position', new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(vertices, stride), 3, 0))
-      .setIndex(new THREE.BufferAttribute(triangles, 1))
-    const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide })
-    const upper = new THREE.Mesh(surface, material)
+    const upper = raycastSurface(model.upper)
     function hitsWall(y, z) {
       const ray = new THREE.Raycaster(new THREE.Vector3(51, -y, z), new THREE.Vector3(-1, 0, 0), 0, 10)
       return ray.intersectObject(upper).length > 0
@@ -311,8 +345,8 @@ test('seam cutouts follow the split and clear the upper lip across the cable wid
     }
     assert(hitsWall(16, upperSeam + 4.8), 'lip material beside the opening still locates the halves')
     assert(hitsWall(14.8, upperSeam - 2.5), 'the outer wall retains the round bore profile')
-    surface.dispose()
-    material.dispose()
+    upper.geometry.dispose()
+    upper.material.dispose()
     inspectSTL(enclosureSTL(model, 'both'))
   }
 

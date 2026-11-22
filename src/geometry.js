@@ -49,7 +49,7 @@ function hasClosedEdges(vertices, triangles, stride) {
   return [...edges.values()].every((balance) => balance === 0)
 }
 
-export function buildEnclosure({ Manifold }, root, { preview = false, screwIssues = [] } = {}) {
+export function buildEnclosure({ Manifold, Mesh }, root, { preview = false, screwIssues = [] } = {}) {
   if (!preview && screwIssues.length) throw new Error(screwIssues[0].message)
   const p = root.parameters
   const layout = enclosureLayout(root)
@@ -76,14 +76,68 @@ export function buildEnclosure({ Manifold }, root, { preview = false, screwIssue
     return primitive
   }
 
+  function wallContour(inset) {
+    return roundedRectangle(p.width - 2 * inset, p.depth - 2 * inset, Math.max(0, p.radius - inset))
+  }
+
   function prism(inset, height, z = 0) {
-    const contour = roundedRectangle(p.width - 2 * inset, p.depth - 2 * inset, Math.max(0, p.radius - inset))
-    const solid = own(Manifold.extrude([contour], height))
+    const solid = own(Manifold.extrude([wallContour(inset)], height))
     return z === 0 ? solid : move(solid, [0, 0, z])
   }
 
   function tray(height, floor) {
     return subtract(prism(0, height), [prism(p.wall, height - floor + BOOLEAN_OVERLAP, floor)])
+  }
+
+  function slopedLipCavity(innerInset) {
+    const top = layout.upperHeight
+    // Advance inward 1 mm for each mm of print height near the seam.
+    const rampTop = top - BOOLEAN_OVERLAP
+    const rampStart = rampTop - (innerInset - p.wall)
+    const profiles = [[p.thickness, p.wall + Math.max(0, p.thickness - rampStart)]]
+    if (rampStart > p.thickness + BOOLEAN_OVERLAP) profiles.push([rampStart, p.wall])
+    const [rampZ, rampInset] = profiles.at(-1)
+    // End the rounded arcs at the height where they reach zero radius.
+    if (p.radius > rampInset && p.radius < innerInset) {
+      const fraction = (p.radius - rampInset) / (innerInset - rampInset)
+      profiles.push([rampZ + (rampTop - rampZ) * fraction, p.radius])
+    }
+    profiles.push([rampTop, innerInset], [top + p.lip + BOOLEAN_OVERLAP, innerInset])
+
+    const vertices = []
+    const triangles = []
+    const rings = profiles.map(([z, inset]) => {
+      const contour = wallContour(inset)
+      return contour.flatMap(([x, y]) => {
+        const index = vertices.length / 3
+        vertices.push(x, y, z)
+        // Match each rounded arc to a single vertex when the inset makes a corner square.
+        return contour.length === 4 ? Array(ARC_STEPS + 1).fill(index) : [index]
+      })
+    })
+    const segmentCount = rings[0].length
+    for (let level = 1; level < rings.length; level++) {
+      const lower = rings[level - 1]
+      const upper = rings[level]
+      for (let i = 0; i < segmentCount; i++) {
+        const next = (i + 1) % segmentCount
+        if (lower[i] !== lower[next]) triangles.push(lower[i], lower[next], upper[next])
+        if (upper[i] !== upper[next]) triangles.push(lower[i], upper[next], upper[i])
+      }
+    }
+    const bottomCenter = vertices.length / 3
+    const topCenter = bottomCenter + 1
+    vertices.push(0, 0, profiles[0][0], 0, 0, profiles.at(-1)[0])
+    const first = rings[0]
+    const last = rings.at(-1)
+    for (let i = 0; i < segmentCount; i++) {
+      const next = (i + 1) % segmentCount
+      if (first[i] !== first[next]) triangles.push(bottomCenter, first[next], first[i])
+      if (last[i] !== last[next]) triangles.push(topCenter, last[i], last[next])
+    }
+    return own(Manifold.ofMesh(new Mesh({
+      numProp: 3, vertProperties: new Float32Array(vertices), triVerts: new Uint32Array(triangles),
+    })))
   }
 
   function opening(feature, { lipRelief = false } = {}) {
@@ -370,25 +424,22 @@ export function buildEnclosure({ Manifold }, root, { preview = false, screwIssue
       return { base: mesh(base, layout.baseLabel), upper: null, layout, cutters, references, previewIssues, previewGuides }
     }
 
-    let upper = root.type === 'split' ? tray(layout.upperHeight, p.thickness) : prism(0, p.thickness)
-    if (p.lip > 0) {
+    let upper
+    if (!p.lip) {
+      upper = root.type === 'split' ? tray(layout.upperHeight, p.thickness) : prism(0, p.thickness)
+    } else {
       const fit = p.wall + p.clearance
+      const innerInset = fit + lidRimWidth(p)
       const start = layout.upperHeight - BOOLEAN_OVERLAP
       const outer = prism(fit, p.lip + BOOLEAN_OVERLAP, start)
-      const inner = prism(fit + lidRimWidth(p), p.lip + 3 * BOOLEAN_OVERLAP, start - BOOLEAN_OVERLAP)
-      const rim = subtract(outer, [inner])
       // Open the lip to its free edge while the bore still defines the outer wall profile.
       const reliefs = cutoutFeatures.filter(({ properties }) => properties.placement === 'seam')
         .map((feature) => flipUpper(opening(feature, { lipRelief: true })))
-      upper = union(upper, [subtract(rim, reliefs)])
       if (root.type === 'split') {
-        // A shoulder joins the inset lip to the upper half's outer walls.
-        const depth = Math.min(p.wall, 1.2)
-        const shoulderZ = layout.upperHeight - depth
-        const shoulder = subtract(prism(0, depth, shoulderZ), [
-          prism(fit + lidRimWidth(p), depth + 2 * BOOLEAN_OVERLAP, shoulderZ - BOOLEAN_OVERLAP),
-        ])
-        upper = union(upper, [shoulder])
+        upper = subtract(union(prism(0, layout.upperHeight), [subtract(outer, reliefs)]), [slopedLipCavity(innerInset)])
+      } else {
+        const inner = prism(innerInset, p.lip + 3 * BOOLEAN_OVERLAP, start - BOOLEAN_OVERLAP)
+        upper = union(prism(0, p.thickness), [subtract(outer, [inner])])
       }
     }
     const upperChildren = childGroups(root.children, 'root', {
