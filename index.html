@@ -3,9 +3,23 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
     <meta name="theme-color" content="#141416">
     <meta name="description" content="Design and export a custom 3D-printable electronics enclosure.">
     <title>Just in Case — Enclosure designer</title>
+    <script>
+      // Apply the saved appearance before the editor first paints.
+      (() => {
+        let saved
+        try { saved = localStorage.getItem('just-in-case.appearance') } catch {}
+        const appearance = saved === 'dark' || saved === 'light' ? saved : 'system'
+        const systemLight = matchMedia('(prefers-color-scheme: light)').matches
+        const scheme = appearance === 'system' ? (systemLight ? 'light' : 'dark') : appearance
+        document.documentElement.dataset.appearance = appearance
+        document.documentElement.dataset.colorScheme = scheme
+        document.querySelector('meta[name="theme-color"]').content = scheme === 'light' ? '#f5f2ee' : '#141416'
+      })()
+    </script>
   </head>
   <body>
     <header class="top-bar">
@@ -43,6 +57,21 @@
               <button type="button" data-export="base"><strong>Base</strong><small>Open side facing up</small></button>
               <button type="button" data-export="upper"><strong>Lid</strong><small>Outside face on the print bed</small></button>
               <button type="button" data-export="both"><strong>Base and lid</strong><small>One STL with parts side by side</small></button>
+            </div>
+          </div>
+          <button id="settings-toggle" class="icon-button" type="button" popovertarget="settings-panel" aria-haspopup="dialog" aria-label="Settings" title="Settings">
+            <span data-icon="gear"></span>
+          </button>
+          <div id="settings-panel" class="settings-panel" popover role="dialog" aria-labelledby="settings-title">
+            <div class="settings-header">
+              <h2 id="settings-title">Settings</h2>
+              <button class="icon-button" type="button" popovertarget="settings-panel" popovertargetaction="hide" aria-label="Close settings" data-icon="close"></button>
+            </div>
+            <div class="setting-row">
+              <span>Appearance</span>
+              <button id="appearance-toggle" class="button button-small" type="button" aria-label="Appearance: System" autofocus>
+                <span data-icon="monitor" aria-hidden="true"></span><span data-appearance-label>System</span>
+              </button>
             </div>
           </div>
         </div>

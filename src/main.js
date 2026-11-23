@@ -2,6 +2,7 @@ import '@fontsource-variable/dm-sans/wght.css'
 import '@fontsource-variable/space-grotesk'
 import './styles.css'
 import wasmURL from 'manifold-3d/manifold.wasm?url'
+import { initAppearance } from './appearance.js'
 import { initGeometry, buildEnclosure } from './geometry.js'
 import { addIcons } from './icons.js'
 import { createInspector } from './inspector.js'
@@ -29,6 +30,7 @@ let geometry
 let preview
 let currentModel
 let lastResolvedRoot
+let displayedModel
 let selectedObject
 let modelObjectPaths = new Map()
 let modelTimer
@@ -105,31 +107,51 @@ function setPartOptions({ hasUpper, baseLabel, upperLabel }) {
   setView(hasUpper ? viewMode : 'base')
 }
 
-function displayModel(model) {
+function collectObjectPaths() {
   // Draft objects keep their identity even if their tree indices change before the next preview.
-  modelObjectPaths = new Map()
+  const paths = new Map()
   function rememberObject(object, path) {
-    modelObjectPaths.set(object, path)
+    paths.set(object, path)
     object.children.forEach((child, index) => rememberObject(child, path + '.children.' + index))
   }
   rememberObject(project.root, 'root')
+  return paths
+}
+
+function drawPreview(model, paths, visibleParts) {
+  preview?.setModel(model, modelObjectPaths.get(selectedObject), paths, visibleParts)
+}
+
+function displayModel(model, root, objectPaths, screwIssues = []) {
+  displayedModel = { model, root, screwIssues }
+  modelObjectPaths = objectPaths
   setPartOptions(model.layout)
-  preview?.setModel(model, modelObjectPaths.get(selectedObject), hiddenModelPaths())
+  drawPreview(model, hiddenModelPaths(), model.visibleParts)
   const { width, depth, height } = model.layout
   $('#size-value').textContent = [width, depth, height].map((value) => numberFormat.format(value)).join(' × ') + ' mm'
   if (preview) previewMessage.hidden = true
 }
 
-function hiddenModelPaths() {
+function hiddenModelPaths(objectPaths = modelObjectPaths) {
   const paths = new Set()
-  for (const [object, path] of modelObjectPaths) {
+  for (const [object, path] of objectPaths) {
     if (inspector.isHidden(object)) paths.add(path)
   }
   return paths
 }
 
-function commitModel(model, root) {
-  displayModel(model)
+function refreshVisibility() {
+  if (!preview || !displayedModel) return
+  const { model, root, screwIssues } = displayedModel
+  const paths = hiddenModelPaths()
+  const visibleParts = paths.size && !paths.has('root')
+    ? buildEnclosure(geometry, root, { preview: true, screwIssues, hiddenPaths: paths }).visibleParts
+    : undefined
+  drawPreview(model, paths, visibleParts)
+}
+
+function commitModel(model, root, objectPaths = collectObjectPaths()) {
+  displayModel(model, root, objectPaths)
   currentModel = model
   lastResolvedRoot = root
   saveLocally()
@@ -160,16 +182,18 @@ function updateModel() {
     return
   }
   try {
-    const model = buildEnclosure(geometry, evaluation.root, { preview: true, screwIssues })
+    const objectPaths = collectObjectPaths()
+    const hiddenPaths = hiddenModelPaths(objectPaths)
+    const model = buildEnclosure(geometry, evaluation.root, { preview: true, screwIssues, hiddenPaths })
     applyEvaluation({ ...evaluation, issues: model.previewIssues })
     if (model.previewIssues.length) {
-      displayModel(model)
+      displayModel(model, evaluation.root, objectPaths, screwIssues)
       const placementOnly = model.previewIssues.every(({ field }) => field.endsWith('.placement'))
       status(placementOnly ? 'Placement needs adjustment' : 'Screw closure needs adjustment', 'error')
       setReady(false)
       return
     }
-    commitModel(model, evaluation.root)
+    commitModel(model, evaluation.root, objectPaths)
   } catch (error) {
     applyEvaluation(evaluation)
     showNotice(error.message)
@@ -221,7 +245,7 @@ const inspector = createInspector(() => project, () => {
 }, scheduleUpdate, (object) => {
   selectedObject = object
   preview?.setSelection(modelObjectPaths.get(object))
-}, () => preview?.setHidden(hiddenModelPaths()))
+}, refreshVisibility)
 
 addIcons(document)
 inspector.reset()
@@ -237,6 +261,7 @@ try {
     control.disabled = true
   }
 }
+initAppearance($('#appearance-toggle'), (light) => preview?.setLightMode(light))
 preview?.setBananaVisible(bananaToggle.checked)
 bananaToggle.addEventListener('change', () => preview?.setBananaVisible(bananaToggle.checked))
 

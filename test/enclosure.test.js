@@ -479,6 +479,69 @@ test('preview faces identify their object after nesting, cutting, and splitting 
   }
 })
 
+test('hiding additions restores the surfaces they join and preserves the printable model', () => {
+  const project = newProject()
+  project.root.children.push(floorCutter())
+  const clean = build(project)
+  const baseBox = makeChild('repeater')
+  const lidBox = makeChild('repeater')
+  Object.assign(baseBox.placement, { x: 45.5, y: 12 })
+  lidBox.placement.part = 'upper'
+  Object.assign(baseBox.parameters.primitive.parameters, { width: 7, depth: 12, height: 8 })
+  project.root.children.push(baseBox, lidBox)
+  const complete = build(project)
+  const { root } = evaluateProject(project)
+  const hidden = buildEnclosure(geometry, root, {
+    preview: true,
+    hiddenPaths: new Set(['root.children.0', 'root.children.1', 'root.children.2']),
+  })
+
+  for (const part of ['base', 'upper']) {
+    const shown = hidden.visibleParts[part]
+    assert.deepEqual(shown.vertices, clean[part].vertices)
+    assert.deepEqual(shown.triangles, clean[part].triangles)
+    assert.deepEqual(enclosureSTL(hidden, part), enclosureSTL(complete, part))
+    assert(inspectSTL(enclosureSTL(complete, part)).volume > inspectSTL(enclosureSTL(clean, part)).volume)
+  }
+  assert(hidden.visibleParts.base.runs.some(({ path }) => path === 'root.children.0'), 'the hidden cutter still cuts the visible floor')
+})
+
+test('hiding an additive child restores its parent and preserves the rest of the branch', () => {
+  const project = newProject('lidded', false)
+  const parent = makeChild('repeater')
+  project.root.children.push(parent)
+  const clean = build(project).base
+  const child = makeChild('repeater', false)
+  Object.assign(child.placement, { x: 2, z: 3 })
+  parent.children.push(child)
+  const preview = buildEnclosure(geometry, evaluateProject(project).root, {
+    preview: true,
+    hiddenPaths: new Set(['root.children.0.children.0']),
+  })
+
+  assert.deepEqual(preview.visibleParts.base.vertices, clean.vertices)
+  assert.deepEqual(preview.visibleParts.base.triangles, clean.triangles)
+  assert(preview.base.runs.some(({ path }) => path === 'root.children.0.children.0'))
+})
+
+test('hiding a support keeps the visible object and the original placement diagnostics', () => {
+  const project = newProject('lidded', false)
+  const support = makeChild('repeater')
+  const attached = makeChild('repeater')
+  const floating = makeChild('repeater')
+  attached.placement.z = 4.5
+  Object.assign(floating.placement, { x: 10, z: 4.5 })
+  project.root.children.push(support, attached, floating)
+  const preview = buildEnclosure(geometry, evaluateProject(project).root, {
+    preview: true,
+    hiddenPaths: new Set(['root.children.0']),
+  })
+
+  assert.deepEqual(preview.previewIssues.map(({ field }) => field), ['root.children.2.placement'])
+  assert.deepEqual(preview.previewGuides.map(({ paths }) => paths), [['root.children.2']])
+  assert.deepEqual(new Set(preview.visibleParts.base.runs.map(({ path }) => path)), new Set(['root', 'root.children.1']))
+})
+
 test('geometry starts as one shape and can add or cut a repeated pattern', () => {
   const project = newProject()
   const baseVolume = () => inspectSTL(enclosureSTL(build(project), 'base')).volume

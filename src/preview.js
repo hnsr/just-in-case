@@ -11,10 +11,12 @@ const alignmentViews = {
   side: { direction: [1, 0, 0], up: [0, 1, 0], horizontal: 'z', vertical: 'y' },
 }
 const axes = [
-  [new THREE.Vector3(1, 0, 0), '#e78a81', 'X'],
-  [new THREE.Vector3(0, 0, -1), '#95c69f', 'Y'],
-  [new THREE.Vector3(0, 1, 0), '#8fb2e2', 'Z'],
+  [new THREE.Vector3(1, 0, 0), 'X'],
+  [new THREE.Vector3(0, 0, -1), 'Y'],
+  [new THREE.Vector3(0, 1, 0), 'Z'],
 ]
+const darkAxes = ['#e78a81', '#95c69f', '#8fb2e2', '#d6d1ca']
+const lightAxes = ['#9f3c37', '#34693e', '#30598c', '#55483c']
 
 // Convert the model’s Z-up coordinates to the viewer’s Y-up coordinates.
 function toGeometry({ vertices, triangles, stride }, includeNormals = true) {
@@ -107,6 +109,10 @@ function partObject(color) {
   return {
     group,
     select,
+    setLightMode(light) {
+      alignmentInk.color.setHex(light ? 0x8c4f18 : 0xf6bc82)
+      occluded.color.setHex(light ? 0x006f7d : 0x41e8ff)
+    },
     setTranslucent(enabled) {
       face.material = enabled ? translucent : shaded
       edge.material = enabled ? alignmentInk : ink
@@ -154,7 +160,7 @@ function contactShadow() {
   return shadow
 }
 
-function drawAxes(canvas, camera, aligned) {
+function drawAxes(canvas, camera, aligned, colors) {
   const context = canvas.getContext('2d')
   const rotation = camera.quaternion.clone().invert()
   const origin = [36, 38]
@@ -163,7 +169,7 @@ function drawAxes(canvas, camera, aligned) {
   context.font = '600 11px system-ui'
   context.textAlign = 'center'
   context.textBaseline = 'middle'
-  for (const [axis, color, label] of axes) {
+  for (const [index, [axis, label]] of axes.entries()) {
     const vector = axis.clone().applyQuaternion(rotation)
     if (aligned && Math.hypot(vector.x, vector.y) < 0.01) continue
     const point = [origin[0] + vector.x * 23, origin[1] - vector.y * 23]
@@ -171,12 +177,12 @@ function drawAxes(canvas, camera, aligned) {
     context.moveTo(...origin)
     context.lineTo(...point)
     context.lineWidth = 1.6
-    context.strokeStyle = color
+    context.strokeStyle = colors[index]
     context.stroke()
-    context.fillStyle = color
+    context.fillStyle = colors[index]
     context.fillText(label, origin[0] + vector.x * 32, origin[1] - vector.y * 32)
   }
-  context.fillStyle = '#d6d1ca'
+  context.fillStyle = colors[3]
   context.beginPath()
   context.arc(...origin, 2, 0, Math.PI * 2)
   context.fill()
@@ -264,6 +270,7 @@ export function createPreview(container, axisCanvas) {
   const alignmentSize = new THREE.Vector2(100, 70)
   let mode = 'exploded'
   let frame
+  let axisColors = darkAxes
 
   function render() {
     frame = undefined
@@ -271,11 +278,22 @@ export function createPreview(container, axisCanvas) {
     const active = alignmentView ? alignmentCamera : camera
     cutterOutline.update(active, container.clientHeight * active.zoom / (active.top - active.bottom))
     renderer.render(scene, active)
-    drawAxes(axisCanvas, active, alignmentView)
+    drawAxes(axisCanvas, active, alignmentView, axisColors)
   }
 
   function draw() {
     if (frame === undefined) frame = requestAnimationFrame(render)
+  }
+
+  function setLightMode(light) {
+    axisColors = light ? lightAxes : darkAxes
+    grid.material.opacity = light ? 0.2 : 0.7
+    shadow.material.opacity = light ? 0.22 : 1
+    base.setLightMode(light)
+    lid.setLightMode(light)
+    cutterOutline.line.material.color.setHex(light ? 0x006c67 : 0x70fff1)
+    invalidOutline.color.setHex(light ? 0xaa2038 : 0xff7784)
+    draw()
   }
 
   function resize() {
@@ -498,21 +516,22 @@ export function createPreview(container, axisCanvas) {
   observer.observe(container)
   resize()
 
-  function refreshSelection(refreshEdges) {
-    base.select(selectedPath, isHidden, refreshEdges)
-    if (model?.upper) lid.select(selectedPath, isHidden, refreshEdges)
+  function refreshSelection() {
+    base.select(selectedPath, isHidden)
+    if (model?.upper) lid.select(selectedPath, isHidden)
     updateOverlayVisibility()
     updateCutter()
     arrange()
   }
 
   return {
-    setModel(nextModel, path, paths) {
+    setLightMode,
+    setModel(nextModel, path, paths, visibleParts = {}) {
       model = nextModel
       selectedPath = path
       hiddenPaths = paths
-      base.set(model.base, selectedPath, isHidden)
-      if (model.upper) lid.set(model.upper, selectedPath, isHidden)
+      base.set(visibleParts.base ?? model.base, selectedPath, isHidden)
+      if (model.upper) lid.set(visibleParts.upper ?? model.upper, selectedPath, isHidden)
       updateOverlays()
       updateCutter()
       arrange()
@@ -520,11 +539,7 @@ export function createPreview(container, axisCanvas) {
     setSelection(path) {
       if (selectedPath === path) return
       selectedPath = path
-      refreshSelection(false)
-    },
-    setHidden(paths) {
-      hiddenPaths = paths
-      refreshSelection(true)
+      refreshSelection()
     },
     setMode(nextMode) {
       mode = nextMode

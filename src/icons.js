@@ -26,6 +26,10 @@ const paths = {
   formula: '<path d="M18 4H6l6 8-6 8h12m0-16v3m0 10v3"/>',
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
+  gear: '<path d="M10 3h4l.5 2.6 1.5.9 2.5-.9 2 3.4-2 1.7v2.6l2 1.7-2 3.4-2.5-.9-1.5.9-.5 2.6h-4l-.5-2.6-1.5-.9-2.5.9-2-3.4 2-1.7v-2.6L3.5 9l2-3.4 2.5.9 1.5-.9L10 3Z"/><circle cx="12" cy="12" r="3"/>',
+  monitor: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M12 17v4m-4 0h8"/>',
+  moon: '<path d="M20.5 15.2A8.8 8.8 0 0 1 8.8 3.5a9 9 0 1 0 11.7 11.7Z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19M5 19l1.4-1.4M17.6 6.4 19 5"/>',
 }
 
 export function addIcons(root) {

@@ -51,7 +51,7 @@ function hasClosedEdges(vertices, triangles, stride) {
   return [...edges.values()].every((balance) => balance === 0)
 }
 
-export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview = false, screwIssues = [] } = {}) {
+export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview = false, screwIssues = [], hiddenPaths } = {}) {
   if (!preview && screwIssues.length) throw new Error(screwIssues[0].message)
   const p = root.parameters
   const layout = enclosureLayout(root)
@@ -296,12 +296,15 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
     else if (object.type === 'pcb-screw-mount') solid = pcbScrewMount(object.parameters, path)
     else solid = pressFit(object.parameters, path)
     const groups = childGroups(object.children, path, { part, toPart: (child) => toPart(place(child)), reference, cutOwner })
-    return place(subtract(union(solid, groups.adds), groups.cuts))
+    const assemble = (adds) => place(subtract(union(solid, adds), groups.cuts))
+    return { solid: assemble(groups.adds), visible: groups.visibleAdds && assemble(groups.visibleAdds) }
   }
 
   function childGroups(children, path, { part, surface = 0, toPart = (solid) => solid, availableHeight, reference = false, cutOwner }) {
     const adds = []
     const cuts = []
+    const visibleAdds = hiddenPaths?.size && !hiddenPaths.has('root') && cutOwner === undefined ? [] : null
+    let visibilityChanged = false
     const envelope = availableHeight === undefined ? null : prism(0, availableHeight)
     children.forEach((object, index) => {
       if (path === 'root' && object.placement.part !== part) return
@@ -312,7 +315,9 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
       const owner = cutOwner ?? (cutting ? path : undefined)
       objectsByPath.set(key, { object, visiblePath: owner ?? key })
       const overlap = path === 'root' && object.type !== 'pcb-screw-mount' ? BOOLEAN_OVERLAP : 0
-      const result = childGeometry(object, key, { part, surface: surface - overlap, toPart, reference: isReference, cutOwner: owner })
+      const { solid: result, visible } = childGeometry(object, key, {
+        part, surface: surface - overlap, toPart, reference: isReference, cutOwner: owner,
+      })
       if (isReference) {
         const placed = toPart(result)
         const data = own(placed.calculateNormals(0, 45)).getMesh()
@@ -349,10 +354,22 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
         }
         cutters.set(key, { part, vertices: new Float32Array(vertProperties), triangles, stride: numProp })
       }
-      const collection = cutting ? cuts : adds
-      collection.push(result)
+      if (cutting) {
+        cuts.push(result)
+      } else {
+        adds.push(result)
+        // Repeat the union without hidden additions so the underlying surface is rebuilt.
+        // Cutter branches keep their full shape. Hiding a cutter only hides its guide.
+        if (visibleAdds) {
+          if (hiddenPaths.has(key)) visibilityChanged = true
+          else {
+            visibleAdds.push(visible ?? result)
+            if (visible) visibilityChanged = true
+          }
+        }
+      }
     })
-    return { adds, cuts }
+    return { adds, cuts, visibleAdds: visibilityChanged ? visibleAdds : null }
   }
 
   function placementHint(min, max, height) {
@@ -377,14 +394,17 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
     return hints.join(' ') || 'Move it away from the rounded corner or reduce its span.'
   }
 
-  function completePart(shell, { adds, cuts }, part, openings = []) {
+  function completePart(shell, { adds, cuts, visibleAdds }, part, openings = []) {
     const label = part === 'base' ? layout.baseLabel : layout.upperLabel
-    const solid = subtract(union(shell, adds), [...openings, ...cuts])
+    const cutters = [...openings, ...cuts]
+    const assemble = (shapes) => subtract(union(shell, shapes), cutters)
+    const solid = assemble(adds)
     if (solid.status() !== 'NoError' || solid.isEmpty()) {
       throw new Error('The ' + label.toLowerCase() + ' could not be made into a solid.')
     }
     const pieces = solid.decompose().map(own)
-    if (pieces.length === 1) return solid
+    const visible = visibleAdds && assemble(visibleAdds)
+    if (pieces.length === 1) return { solid, visible }
 
     const message = 'The ' + label.toLowerCase() + ' has disconnected pieces. Check that added objects touch their mounting surface and cutouts leave the walls joined.'
     if (!preview) throw new Error(message)
@@ -424,7 +444,8 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
       })
     }
     for (const { piece, sources } of loose) addGuide(piece, part, false, [...sources])
-    return attached
+    // Keep existing draft geometry in its red guides even when visibility changes.
+    return { solid: attached, visible: visible && subtract(visible, loose.map(({ piece }) => piece)) }
   }
 
   function mesh(solid, label) {
@@ -440,10 +461,11 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
     }
     const model = {
       ...meshBuffers(shaded),
-      height: solid.boundingBox().max[2],
+      height: solid.isEmpty() ? 0 : solid.boundingBox().max[2],
       runs,
     }
-    if (!hasClosedEdges(model.vertices, model.triangles, model.stride)) {
+    // Only printable parts must pass the STL edge check.
+    if (label && !hasClosedEdges(model.vertices, model.triangles, model.stride)) {
       throw new Error('The ' + label.toLowerCase() + ' has a collapsed or shared edge. Move any cutouts or objects that just touch.')
     }
     return model
@@ -461,8 +483,9 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
       part: 'base', surface: p.floor, availableHeight: layout.height - (layout.hasUpper ? p.thickness : 0),
     })
     if (!layout.hasUpper) {
-      const base = completePart(tray(layout.baseHeight, p.floor), baseChildren, 'base', openings)
-      return { base: mesh(base, layout.baseLabel), upper: null, layout, cutters, references, previewIssues, previewGuides }
+      const { solid, visible } = completePart(tray(layout.baseHeight, p.floor), baseChildren, 'base', openings)
+      const visibleParts = visible ? { base: mesh(visible) } : undefined
+      return { base: mesh(solid, layout.baseLabel), upper: null, visibleParts, layout, cutters, references, previewIssues, previewGuides }
     }
 
     let upper
@@ -512,20 +535,25 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
       } else {
         cornerPads = pads
         baseChildren.adds.push(...collars)
+        baseChildren.visibleAdds?.push(...collars)
         baseChildren.cuts.push(...pilots)
         upperChildren.cuts.push(...lidHoles)
       }
     }
     if (root.type === 'split') upperChildren.cuts.push(...openings.map(flipUpper))
     const base = completePart(tray(layout.baseHeight, p.floor, cornerPads), baseChildren, 'base', openings)
-    const baseMesh = mesh(base, layout.baseLabel)
-    upper = completePart(upper, upperChildren, 'upper')
-    const upperMesh = mesh(upper, layout.upperLabel)
-    if (own(base.intersect(flipUpper(upper))).volume() > 0.005) {
+    const lid = completePart(upper, upperChildren, 'upper')
+    const baseMesh = mesh(base.solid, layout.baseLabel)
+    const upperMesh = mesh(lid.solid, layout.upperLabel)
+    if (own(base.solid.intersect(flipUpper(lid.solid))).volume() > 0.005) {
       const hint = p.lip ? 'Check the lip dimensions and any objects near the mating edge.' : 'Check any objects near the mating edge.'
       throw new Error('The parts intersect when assembled. ' + hint)
     }
-    return { base: baseMesh, upper: upperMesh, layout, cutters, references, previewIssues, previewGuides }
+    const visibleParts = {
+      ...(base.visible && { base: mesh(base.visible) }),
+      ...(lid.visible && { upper: mesh(lid.visible) }),
+    }
+    return { base: baseMesh, upper: upperMesh, visibleParts, layout, cutters, references, previewIssues, previewGuides }
   } finally {
     for (const solid of owned.reverse()) solid.delete()
   }
