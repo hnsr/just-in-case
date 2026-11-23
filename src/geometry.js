@@ -1,5 +1,7 @@
 import createManifold from 'manifold-3d'
-import { enclosureLayout, lidRimWidth, rectangleCorners, screwPositions } from './definitions.js'
+import {
+  LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, cornerFasteners, enclosureLayout, lidRimWidth, rectangleCorners,
+} from './definitions.js'
 
 const ARC_STEPS = 16
 const BOOLEAN_OVERLAP = 0.05
@@ -49,7 +51,7 @@ function hasClosedEdges(vertices, triangles, stride) {
   return [...edges.values()].every((balance) => balance === 0)
 }
 
-export function buildEnclosure({ Manifold, Mesh }, root, { preview = false, screwIssues = [] } = {}) {
+export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview = false, screwIssues = [] } = {}) {
   if (!preview && screwIssues.length) throw new Error(screwIssues[0].message)
   const p = root.parameters
   const layout = enclosureLayout(root)
@@ -85,8 +87,12 @@ export function buildEnclosure({ Manifold, Mesh }, root, { preview = false, scre
     return z === 0 ? solid : move(solid, [0, 0, z])
   }
 
-  function tray(height, floor) {
-    return subtract(prism(0, height), [prism(p.wall, height - floor + BOOLEAN_OVERLAP, floor)])
+  function tray(height, floor, cornerPads = []) {
+    const cavityHeight = height - floor + BOOLEAN_OVERLAP
+    const outer = prism(0, height)
+    if (!cornerPads.length) return subtract(outer, [prism(p.wall, cavityHeight, floor)])
+    const cavity = own(CrossSection.difference([[wallContour(p.wall)], ...cornerPads]))
+    return subtract(outer, [move(own(cavity.extrude(cavityHeight)), [0, 0, floor])])
   }
 
   function slopedLipCavity(innerInset) {
@@ -178,24 +184,59 @@ export function buildEnclosure({ Manifold, Mesh }, root, { preview = false, scre
     return subtract(own(Manifold.union(posts)), pilots)
   }
 
-  function screwClosure(feature) {
-    const f = feature.parameters
-    const positions = screwPositions(p, feature).filter(({ x, y }) => Number.isFinite(x) && Number.isFinite(y))
-    // Lid print coordinates are reflected in Y when the lid is flipped onto the base.
-    const lidPositions = positions.map(({ x, y }) => ({ x, y: -y }))
-    const { posts, pilots } = screwPosts(positions, f, p.floor - BOOLEAN_OVERLAP, p.height)
-    const lidHoles = Number.isFinite(f.clearanceDiameter) ? lidPositions.map((position) =>
-      verticalCylinder(position, -BOOLEAN_OVERLAP, p.thickness + BOOLEAN_OVERLAP, f.clearanceDiameter / 2)) : []
-    if (f.counterboreDepth > 0 && Number.isFinite(f.counterboreDiameter)) {
-      lidHoles.push(...lidPositions.map((position) =>
-        verticalCylinder(position, -BOOLEAN_OVERLAP, f.counterboreDepth, f.counterboreDiameter / 2)))
-    }
-    if (screwIssues.length) return { posts, pilots, lidHoles }
-    const headDiameter = f.counterboreDepth > 0 ? f.counterboreDiameter : f.clearanceDiameter
-    const baseFootprint = own(Manifold.union(positions.map((position) => verticalCylinder(position, 0, p.height, f.diameter / 2))))
-    const lidFootprint = own(Manifold.union(lidPositions.map((position) =>
-      verticalCylinder(position, 0, p.thickness, Math.max(headDiameter, f.diameter) / 2))))
-    return { posts, pilots, lidHoles, baseFootprint, lidFootprint }
+  function screwClosure() {
+    const { positions, x, y, bossRadius, collarRadius, recessRadius } = cornerFasteners(p)
+    const pads = []
+    const collars = []
+    const pilots = []
+    const lidHoles = []
+    if (x <= 0 || y <= 0) return { pads, collars, pilots, lidHoles }
+
+    const cornerX = p.width / 2 - p.wall / 2
+    const cornerY = p.depth / 2 - p.wall / 2
+    const envelope = [wallContour(p.wall / 2)]
+    const diagonal = Math.hypot(x, y)
+    const slotX = LOCATOR_SLOT_TRAVEL * x / diagonal
+    // Lid print coordinates reverse Y when the lid is assembled.
+    const slotY = -LOCATOR_SLOT_TRAVEL * y / diagonal
+
+    positions.forEach((position, index) => {
+      const lid = { x: position.x, y: -position.y }
+      if (Number.isFinite(bossRadius)) {
+        const circle = own(CrossSection.circle(bossRadius, 64))
+        const round = own(circle.translate([position.x, position.y]))
+        const cx = Math.sign(position.x) * cornerX
+        const cy = Math.sign(position.y) * cornerY
+        const corner = [[position.x, position.y], [cx, position.y], [cx, cy], [position.x, cy]]
+        // Extend the round boss past both inner walls so it is part of the tray cross-section.
+        const pad = own(CrossSection.hull([round, [corner]]))
+        pads.push(own(pad.intersect(envelope)))
+      }
+      if (Number.isFinite(p.pilotDiameter) && Number.isFinite(p.pilotDepth)) {
+        pilots.push(verticalCylinder(position, p.height - p.pilotDepth, p.height + LOCATOR_HEIGHT + BOOLEAN_OVERLAP, p.pilotDiameter / 2))
+      }
+      if (Number.isFinite(p.clearanceDiameter)) {
+        lidHoles.push(verticalCylinder(lid, -BOOLEAN_OVERLAP, p.thickness + BOOLEAN_OVERLAP, p.clearanceDiameter / 2))
+      }
+      if (p.counterboreDepth > 0 && Number.isFinite(p.counterboreDiameter)) {
+        lidHoles.push(verticalCylinder(lid, -BOOLEAN_OVERLAP, p.counterboreDepth, p.counterboreDiameter / 2))
+      }
+
+      if (index % 2 !== 0 || !Number.isFinite(collarRadius)) return
+      const collar = own(Manifold.cylinder(LOCATOR_HEIGHT + BOOLEAN_OVERLAP, collarRadius, collarRadius - 0.25, 64, true))
+      collars.push(move(collar, [position.x, position.y, p.height + (LOCATOR_HEIGHT - BOOLEAN_OVERLAP) / 2]))
+      if (!Number.isFinite(recessRadius)) return
+      const recess = (center) => verticalCylinder(center, p.thickness - LOCATOR_RECESS_DEPTH, p.thickness + BOOLEAN_OVERLAP, recessRadius)
+      if (index === 0) {
+        lidHoles.push(recess(lid))
+      } else {
+        lidHoles.push(own(Manifold.hull([
+          recess({ x: lid.x - slotX, y: lid.y - slotY }),
+          recess({ x: lid.x + slotX, y: lid.y + slotY }),
+        ])))
+      }
+    })
+    return { pads, collars, pilots, lidHoles }
   }
 
   function overlaps(footprint, shapes) {
@@ -415,12 +456,12 @@ export function buildEnclosure({ Manifold, Mesh }, root, { preview = false, scre
   try {
     const cutoutFeatures = root.features.filter(({ type }) => type === 'cutout')
     const openings = cutoutFeatures.map((feature) => opening(feature))
-    const baseShell = tray(layout.baseHeight, p.floor)
+    let cornerPads = []
     const baseChildren = childGroups(root.children, 'root', {
       part: 'base', surface: p.floor, availableHeight: layout.height - (layout.hasUpper ? p.thickness : 0),
     })
     if (!layout.hasUpper) {
-      const base = completePart(baseShell, baseChildren, 'base', openings)
+      const base = completePart(tray(layout.baseHeight, p.floor), baseChildren, 'base', openings)
       return { base: mesh(base, layout.baseLabel), upper: null, layout, cutters, references, previewIssues, previewGuides }
     }
 
@@ -445,40 +486,44 @@ export function buildEnclosure({ Manifold, Mesh }, root, { preview = false, scre
     const upperChildren = childGroups(root.children, 'root', {
       part: 'upper', surface: p.thickness, availableHeight: layout.height - p.floor,
     })
-    const closureIndex = root.features.findIndex(({ type }) => type === 'screw-closure')
-    if (closureIndex >= 0) {
-      const closure = screwClosure(root.features[closureIndex])
+    if (root.type === 'screw-fastened') {
+      const { pads, collars, pilots, lidHoles } = screwClosure()
+      const bosses = pads.map((pad) => move(own(pad.extrude(p.height - p.floor)), [0, 0, p.floor]))
+      const screwSolids = [...bosses, ...collars]
       let invalid = Boolean(screwIssues.length)
       if (!invalid) {
-        const baseOverlap = overlaps(closure.baseFootprint, [...baseChildren.adds, ...baseChildren.cuts])
-        // A lid-side object can reach into the space filled by a base boss.
-        const lidOverlap = overlaps(closure.lidFootprint, [...upperChildren.adds, ...upperChildren.cuts])
-          || overlaps(flipUpper(closure.baseFootprint), upperChildren.adds)
+        const baseFootprint = own(Manifold.union(screwSolids))
+        const lidFootprint = own(Manifold.union(lidHoles))
+        const baseOverlap = overlaps(baseFootprint, [...baseChildren.adds, ...baseChildren.cuts, ...openings])
+        const lidOverlap = overlaps(lidFootprint, [...upperChildren.adds, ...upperChildren.cuts])
+          || overlaps(flipUpper(baseFootprint), upperChildren.adds)
         for (const [part, blocked] of [['base', baseOverlap], ['lid', lidOverlap]]) {
           if (!blocked) continue
-          const message = 'Screw closure overlaps another object or cut on the ' + part + '. Move the screw positions or the other geometry.'
+          const message = 'Screw closure overlaps another object or cut on the ' + part + '. Move the object or cutout away from the corner.'
           if (!preview) throw new Error(message)
-          previewIssues.push({ field: 'root.features.' + closureIndex, message })
+          previewIssues.push({ field: 'root.parameters.bossDiameter', message })
           invalid = true
         }
       }
       if (invalid) {
-        for (const post of closure.posts) addGuide(post, 'base')
-        for (const pilot of closure.pilots) addGuide(pilot, 'base', true)
-        for (const hole of closure.lidHoles) addGuide(hole, 'upper', true)
+        for (const solid of screwSolids) addGuide(solid, 'base')
+        for (const pilot of pilots) addGuide(pilot, 'base', true)
+        for (const hole of lidHoles) addGuide(hole, 'upper', true)
       } else {
-        baseChildren.adds.push(...closure.posts)
-        baseChildren.cuts.push(...closure.pilots)
-        upperChildren.cuts.push(...closure.lidHoles)
+        cornerPads = pads
+        baseChildren.adds.push(...collars)
+        baseChildren.cuts.push(...pilots)
+        upperChildren.cuts.push(...lidHoles)
       }
     }
     if (root.type === 'split') upperChildren.cuts.push(...openings.map(flipUpper))
-    const base = completePart(baseShell, baseChildren, 'base', openings)
+    const base = completePart(tray(layout.baseHeight, p.floor, cornerPads), baseChildren, 'base', openings)
     const baseMesh = mesh(base, layout.baseLabel)
     upper = completePart(upper, upperChildren, 'upper')
     const upperMesh = mesh(upper, layout.upperLabel)
     if (own(base.intersect(flipUpper(upper))).volume() > 0.005) {
-      throw new Error('The parts intersect when assembled. Check the lip dimensions and any objects near the mating edge.')
+      const hint = p.lip ? 'Check the lip dimensions and any objects near the mating edge.' : 'Check any objects near the mating edge.'
+      throw new Error('The parts intersect when assembled. ' + hint)
     }
     return { base: baseMesh, upper: upperMesh, layout, cutters, references, previewIssues, previewGuides }
   } finally {

@@ -3,8 +3,8 @@ import test from 'node:test'
 import * as THREE from 'three'
 import { createCutterOutline } from '../src/cutter-outline.js'
 import { buildEnclosure, initGeometry } from '../src/geometry.js'
-import { defaultProject, evaluateProject, makeChild, makeFeature, newProject, parseProject, projectJSON, screwClosureDraftIssues } from '../src/project.js'
-import { makePrimitive } from '../src/definitions.js'
+import { defaultProject, evaluateProject, makeChild, newProject, parseProject, projectJSON, screwClosureDraftIssues } from '../src/project.js'
+import { LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, cornerFasteners, makePrimitive } from '../src/definitions.js'
 import { enclosureSTL } from '../src/stl.js'
 
 const geometry = await initGeometry()
@@ -157,93 +157,113 @@ test('PCB screw mounts can be placed and rotated independently with blind pilot 
   inspectSTL(enclosureSTL(model, 'base'))
 })
 
-test('screw closure pairs the base and lid at corner and asymmetric custom positions', () => {
-  const project = newProject()
-  const feature = makeFeature('screw-closure', project.root)
-  project.root.features.push(feature)
-  const corners = build(project)
-  for (const x of [-38, 38]) {
-    for (const y of [-23, 23]) {
-      assert(hasVertex(corners.base, x + 4, y, 30))
-      assert(hasVertex(corners.upper, x + 1.7, -y, 0))
+test('the screw-fastened enclosure has a flat lid and four integral corner bosses with matching holes', () => {
+  const project = newProject('screw-fastened', false)
+  const p = project.root.parameters
+  const { positions, x, y, collarRadius, recessRadius } = cornerFasteners(p)
+  assert.deepEqual(project.root.features, [])
+  assert.equal(p.lip, undefined)
+
+  const model = build(parseProject(projectJSON(project)))
+  const base = inspectSTL(enclosureSTL(model, 'base'))
+  const lid = inspectSTL(enclosureSTL(model, 'upper'))
+  assert.equal(model.layout.height, p.height + p.thickness)
+  assert.equal(base.max[2], p.height + LOCATOR_HEIGHT)
+  assert.equal(lid.max[2], p.thickness)
+  const baseSurface = raycastSurface(model.base)
+  const fromBelow = new THREE.Vector3(0, 0, 1)
+  const fromAbove = new THREE.Vector3(0, 0, -1)
+  const cast = (point, direction, surface) => new THREE.Raycaster(new THREE.Vector3(...point), direction)
+    .intersectObject(surface)
+  const closeTo = (actual, expected) => assert(Math.abs(actual - expected) < 0.001, actual + ' is not close to ' + expected)
+
+  for (const [index, position] of positions.entries()) {
+    const { x, y } = position
+    const [pilotBottom] = cast([x, y, p.height + 2], fromAbove, baseSurface)
+    closeTo(pilotBottom.point.z, p.height - p.pilotDepth)
+    assert(hasVertex(model.upper, x + p.clearanceDiameter / 2, -y, 0))
+
+    // Between the boss and either wall, the first face from the floor is the rim.
+    const wallX = Math.sign(x) * (p.width / 2 - p.wall - 0.1)
+    const wallY = Math.sign(y) * (p.depth / 2 - p.wall - 0.1)
+    for (const point of [[wallX, y + Math.sign(y) * 1.8], [x + Math.sign(x) * 1.8, wallY]]) {
+      const [top] = cast([...point, p.floor + 0.1], fromBelow, baseSurface)
+      closeTo(top.point.z, p.height)
+    }
+    const [bossTop] = cast([x + collarRadius - 0.4, y, p.height + 2], fromAbove, baseSurface)
+    closeTo(bossTop.point.z, p.height + (index % 2 === 0 ? LOCATOR_HEIGHT : 0))
+  }
+
+  // Measure the underside recesses along and across the line between the screws.
+  const lidSurface = raycastSurface(model.upper)
+  const along = new THREE.Vector3(x, -y, 0).normalize()
+  const across = new THREE.Vector3(-along.y, along.x, 0)
+  for (const index of [0, 2]) {
+    const position = positions[index]
+    for (const [axis, limit] of [[along, recessRadius + (index === 2 ? LOCATOR_SLOT_TRAVEL : 0)], [across, recessRadius]]) {
+      const start = new THREE.Vector3(position.x, -position.y, p.thickness - LOCATOR_RECESS_DEPTH / 2)
+        .addScaledVector(axis, 3.8)
+      const [edge] = cast(start.toArray(), axis.clone().negate(), lidSurface)
+      assert(Math.abs(3.8 - edge.distance - limit) < 0.005)
     }
   }
-
-  feature.properties.layout = 'custom'
-  feature.parameters.positions = [{ x: -12, y: -16 }, { x: 23, y: 4 }]
-  feature.parameters.counterboreDepth = 1.2
-  const custom = build(parseProject(projectJSON(project)))
-  for (const { x, y } of feature.parameters.positions) {
-    assert(hasVertex(custom.base, x + 4, y, 30), 'the boss touches the inside lid plane')
-    assert(hasVertex(custom.base, x + 1.35, y, 23), 'the pilot ends at the configured depth')
-    assert(hasVertex(custom.upper, x + 1.7, -y, 2.4), 'the exit hole lines up in assembled coordinates')
-    assert(hasVertex(custom.upper, x + 3.1, -y, 0))
-    assert(hasVertex(custom.upper, x + 3.1, -y, 1.2), 'the counterbore opens on the outside face')
-  }
-  inspectSTL(enclosureSTL(custom, 'base'))
-  inspectSTL(enclosureSTL(custom, 'upper'))
+  baseSurface.geometry.dispose()
+  baseSurface.material.dispose()
+  lidSurface.geometry.dispose()
+  lidSurface.material.dispose()
 })
 
-test('screw closures reject duplicate features, unsupported roots, and obstructions', () => {
-  const project = newProject()
-  const feature = makeFeature('screw-closure', project.root)
-  project.root.features.push(feature, structuredClone(feature))
-  assert.throws(() => build(project), /only one screw closure/)
-  project.root.features.pop()
-  for (const unavailable of [newProject('split'), newProject('lidded', false)]) {
-    unavailable.root.features.push(structuredClone(feature))
-    assert.throws(() => build(unavailable), /requires a lidded enclosure with a lid/)
+test('a counterbore leaves solid lid thickness above the locating recess', () => {
+  const project = newProject('screw-fastened')
+  const p = project.root.parameters
+  p.counterboreDepth = 1.2
+  const model = build(project)
+  for (const { x, y } of cornerFasteners(p).positions) {
+    assert(hasVertex(model.upper, x + p.counterboreDiameter / 2, -y, 0))
+    assert(hasVertex(model.upper, x + p.counterboreDiameter / 2, -y, 1.2))
   }
-  feature.parameters.insetX = 3
-  assert.throws(() => build(project), /must clear the inner walls/)
-  feature.parameters.insetX = 12
-  feature.parameters.counterboreDepth = 2
-  assert.throws(() => build(project), /material|below the counterbore/)
-  feature.parameters.counterboreDepth = 0
-
-  const obstruction = makeChild('repeater')
-  obstruction.parameters.count = 1
-  Object.assign(obstruction.placement, { x: 38, y: 23 })
-  project.root.children.push(obstruction)
-  assert.throws(() => build(project), /overlaps another object or cut on the base/)
-  Object.assign(obstruction.placement, { part: 'upper', y: -23 })
-  assert.throws(() => build(project), /overlaps another object or cut on the lid/)
+  inspectSTL(enclosureSTL(model, 'both'))
+  p.counterboreDepth = 1.4
+  assert.throws(() => build(project), /between it and the locating recess/)
 })
 
-test('invalid screw dimensions and placements produce draft guides on both parts and block export', () => {
+test('an old standalone screw closure reports that the feature has moved', () => {
   const project = newProject()
-  const feature = makeFeature('screw-closure', project.root)
-  project.root.features.push(feature)
-  const withoutClosure = build(newProject())
+  project.root.features.push({ type: 'screw-closure', properties: {}, parameters: {} })
+  assert.throws(() => parseProject(JSON.stringify(project)), /built into the Screw-fastened enclosure/)
+})
+
+test('screw-fastened drafts show invalid dimensions and collisions while blocking export', () => {
+  const project = newProject('screw-fastened')
+  const p = project.root.parameters
+  const { x, y } = cornerFasteners(p)
   const preview = () => {
     const { root, issues } = evaluateProject(project)
     return buildEnclosure(geometry, root, { preview: true, screwIssues: screwClosureDraftIssues(root, issues) })
   }
 
-  feature.parameters.insetY = 3
+  p.bossDiameter = 4
   let model = preview()
-  assert.deepEqual(model.previewIssues.map(({ field }) => field), ['root.features.0.parameters.insetY'])
-  assert(model.previewGuides.some(({ part, mesh }) => part === 'base' && hasVertex(mesh, 42, 32, 30)))
-  assert(model.previewGuides.some(({ part, mesh, outline }) => part === 'upper' && outline && hasVertex(mesh, 39.7, -32, -0.05)))
-  assert.deepEqual(model.base.triangles, withoutClosure.base.triangles)
-  assert.deepEqual(model.upper.triangles, withoutClosure.upper.triangles)
-  assert.throws(() => enclosureSTL(model, 'both'), /must clear the inner walls/)
+  const draft = cornerFasteners(p)
+  assert.deepEqual(model.previewIssues.map(({ field }) => field), ['root.parameters.bossDiameter'])
+  assert(model.previewGuides.some(({ part, mesh }) => part === 'base' && hasVertex(mesh, draft.x - 2, draft.y, p.height)))
+  assert(model.previewGuides.some(({ part, outline }) => part === 'upper' && outline))
+  assert.equal(model.base.height, p.height)
+  assert.throws(() => enclosureSTL(model, 'both'), /support the locating collar/)
 
-  feature.parameters.insetY = 12
-  feature.parameters.counterboreDepth = 3
-  model = preview()
-  assert.match(model.previewIssues[0].message, /below the counterbore/)
-  assert(model.previewGuides.some(({ part, mesh, outline }) => part === 'upper' && outline && hasVertex(mesh, 41.1, -23, 3)))
-  feature.parameters.counterboreDepth = 'missing'
+  p.bossDiameter = 8
+  p.counterboreDepth = 'missing'
   model = preview()
   assert.match(model.previewIssues[0].message, /Unknown variable/)
-  assert.equal(model.previewGuides.filter(({ part }) => part === 'upper').length, 4, 'plain hole outlines remain while the counterbore has no usable depth')
-  feature.parameters.counterboreDepth = 1
+  assert.equal(model.previewGuides.filter(({ part }) => part === 'upper').length, 6, 'through holes and locator recesses remain visible')
+  p.counterboreDepth = 1.2
 
   const obstruction = makeChild('repeater')
-  obstruction.parameters.count = 1
-  Object.assign(obstruction.placement, { part: 'upper', x: 38, y: -23 })
+  Object.assign(obstruction.parameters.primitive.parameters, { width: 4, depth: 4 })
+  Object.assign(obstruction.placement, { x, y })
   project.root.children.push(obstruction)
+  assert.throws(() => build(project), /overlaps another object or cut on the base/)
+  Object.assign(obstruction.placement, { part: 'upper', x: x - 0.7, y: -y + 0.7 })
   model = preview()
   assert.match(model.previewIssues[0].message, /overlaps another object or cut on the lid/)
   assert(model.previewGuides.some(({ part }) => part === 'base'))
@@ -258,11 +278,8 @@ test('invalid screw dimensions and placements produce draft guides on both parts
 })
 
 test('a screw draft still checks the enclosure constraints before building', () => {
-  const project = newProject()
-  const feature = makeFeature('screw-closure', project.root)
-  project.root.features.push(feature)
-  project.root.parameters.radius = 36
-  feature.parameters.pilotDepth = ''
+  const project = newProject('screw-fastened')
+  Object.assign(project.root.parameters, { radius: 36, pilotDepth: '' })
   const { root, issues } = evaluateProject(project)
   assert(issues.some(({ field }) => field === 'root.parameters.radius'))
   assert.deepEqual(screwClosureDraftIssues(root, issues), [])

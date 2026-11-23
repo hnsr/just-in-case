@@ -17,8 +17,23 @@ const closure = {
 
 export const ROOT_TYPES = {
   lidded: { label: 'Lidded enclosure', icon: 'box' },
+  'screw-fastened': { label: 'Screw-fastened enclosure', icon: 'bolt' },
   split: { label: 'Split enclosure', icon: 'layers' },
 }
+
+export const SCREW_FIELDS = {
+  bossDiameter: mm('Boss diameter', 8, 2, 30),
+  pilotDiameter: mm('Pilot hole diameter', 2.7, 0.5, 12),
+  pilotDepth: mm('Pilot hole depth', 7, 0.5, 60),
+  clearanceDiameter: mm('Lid hole diameter', 3.4, 0.8, 16),
+  counterboreDepth: mm('Counterbore depth', 0, 0, 12),
+  counterboreDiameter: mm('Counterbore diameter', 6.2, 2, 30),
+  locatorClearance: mm('Locator clearance per side', 0.25, 0.1, 1),
+}
+
+export const LOCATOR_HEIGHT = 0.8
+export const LOCATOR_RECESS_DEPTH = 1
+export const LOCATOR_SLOT_TRAVEL = 0.5
 
 export const CHILD_TYPES = {
   'pcb-screw-mount': {
@@ -87,42 +102,38 @@ export const FEATURES = {
       z: mm('Center from enclosure bottom', 12, 0, 200),
     },
   },
-  'screw-closure': {
-    label: 'Screw closure', icon: 'bolt',
-    fields: {
-      insetX: mm('X inset from outside', 12, 2, 200),
-      insetY: mm('Y inset from outside', 12, 2, 200),
-      diameter: mm('Boss diameter', 8, 2, 30),
-      pilotDiameter: mm('Pilot hole diameter', 2.7, 0.5, 12),
-      pilotDepth: mm('Pilot hole depth', 7, 0.5, 60),
-      clearanceDiameter: mm('Lid hole diameter', 3.4, 0.8, 16),
-      counterboreDepth: mm('Counterbore depth', 0, 0, 12),
-      counterboreDiameter: mm('Counterbore diameter', 6.2, 2, 30),
-    },
-  },
 }
 
 export const SIDES = ['Front', 'Right', 'Back', 'Left']
 export const SHAPES = ['Rectangle', 'Circle']
 export const CUTOUT_PLACEMENTS = { height: 'At height', seam: 'At split seam' }
-export const SCREW_LAYOUTS = { corners: 'Four corners', custom: 'Custom positions' }
-export const SCREW_POSITION_FIELDS = { x: mm('X position', 0, -200, 200), y: mm('Y position', 0, -200, 200) }
-
-export function supportsScrewClosure(root) {
-  return root.type === 'lidded' && root.properties.includeLid
-}
 
 export function rectangleCorners(x, y) {
   return [{ x, y }, { x: -x, y }, { x: -x, y: -y }, { x, y: -y }]
 }
 
-export function screwPositions(body, feature) {
-  const { insetX, insetY, positions } = feature.parameters
-  return feature.properties.layout === 'custom' ? positions : rectangleCorners(body.width / 2 - insetX, body.depth / 2 - insetY)
+export function cornerFasteners(p) {
+  const bossRadius = p.bossDiameter / 2
+  const collarRadius = p.clearanceDiameter / 2 + 1
+  const recessRadius = collarRadius + p.locatorClearance
+  const headRadius = p.counterboreDepth > 0 ? p.counterboreDiameter / 2 : 0
+  const envelopeRadius = Math.max(bossRadius || 0, (recessRadius + LOCATOR_SLOT_TRAVEL) || 0, headRadius || 0)
+  const edgeRoom = envelopeRadius + 0.7
+  // Equal X/Y insets keep the same edge room at a rounded corner.
+  const inset = Math.max(p.wall + 0.5, edgeRoom, p.radius + (edgeRoom - p.radius) / Math.SQRT2)
+  const x = p.width / 2 - inset
+  const y = p.depth / 2 - inset
+  return { positions: rectangleCorners(x, y), x, y, bossRadius, collarRadius, recessRadius, envelopeRadius }
+}
+
+export function isScrewParameter(field) {
+  const prefix = 'root.parameters.'
+  return field.startsWith(prefix) && Object.hasOwn(SCREW_FIELDS, field.slice(prefix.length))
 }
 
 export function parameterFields(object) {
   if (object.type === 'lidded') return object.properties.includeLid ? { ...body, ...closure } : body
+  if (object.type === 'screw-fastened') return { ...body, thickness: mm('Lid thickness', 3, 2, 12), ...SCREW_FIELDS }
   if (object.type === 'split') {
     return {
       ...body,
@@ -136,10 +147,6 @@ export function parameterFields(object) {
 }
 
 export function featureFields(feature) {
-  if (feature.type === 'screw-closure' && feature.properties.layout === 'custom') {
-    const { insetX, insetY, ...shared } = FEATURES['screw-closure'].fields
-    return shared
-  }
   if (feature.type !== 'cutout') return FEATURES[feature.type].fields
   const { width, height, offset, z } = FEATURES.cutout.fields
   const size = feature.properties.shape === 'Circle' ? { width: { ...width, label: 'Diameter' } } : { width, height }
@@ -157,7 +164,7 @@ export function makePrimitive(type) {
 export function enclosureLayout(root) {
   const p = root.parameters
   const split = root.type === 'split'
-  const hasUpper = split || root.properties.includeLid
+  const hasUpper = split || root.type === 'screw-fastened' || root.properties.includeLid === true
   const baseHeight = split ? p.seam : p.height
   const height = split ? p.height : p.height + (hasUpper ? p.thickness : 0)
   return {

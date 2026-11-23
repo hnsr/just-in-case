@@ -267,10 +267,6 @@ details[open] .section-icon { color: var(--accent); }
 .feature-card > summary { min-height: 40px; padding: 0.45rem 0.68rem; font-size: 0.86rem; }
 .feature-card .section-content { padding: 0 0.68rem 0.6rem; }
 .feature-options { margin-bottom: 0.8rem; }
-.screw-positions { margin-top: 0.8rem; padding-top: 0.7rem; border-top: 1px solid var(--line); }
-.screw-positions > .field-hint { margin: 0 0 0.65rem; }
-.screw-position { display: grid; grid-template-columns: minmax(0, 1fr) 32px; align-items: end; gap: 0.45rem; margin-bottom: 0.55rem; }
-.screw-position > button { width: 32px; align-self: start; margin-top: 1.38rem; }
 .remove-feature { margin-top: 0.5rem; }
 .primitive-box { padding: 0.68rem; }
 .primitive-box .fields { margin-top: 0.68rem; }

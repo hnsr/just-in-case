@@ -33,7 +33,7 @@ let selectedObject
 let modelObjectPaths = new Map()
 let modelTimer
 let toastTimer
-let restoreError = false
+let restoreError = ''
 let loadError = false
 let viewMode = 'exploded'
 
@@ -41,8 +41,8 @@ function restoreProject() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY)
     if (saved) return parseProject(saved)
-  } catch {
-    restoreError = true
+  } catch (error) {
+    restoreError = error.message || 'The saved project could not be loaded.'
   }
   return defaultProject()
 }
@@ -75,6 +75,10 @@ function setReady(ready) {
 }
 
 function saveLocally() {
+  if (restoreError) {
+    status('Example open · Autosave paused', 'error')
+    return
+  }
   try {
     localStorage.setItem(STORAGE_KEY, projectJSON(project))
     status('Saved in this browser', 'saved')
@@ -183,6 +187,7 @@ function scheduleUpdate() {
 
 function replaceProject(nextProject, evaluated, nextModel) {
   clearTimeout(modelTimer)
+  restoreError = ''
   project = nextProject
   lastResolvedRoot = undefined
   viewMode = 'exploded'
@@ -222,7 +227,7 @@ addIcons(document)
 inspector.reset()
 nameInput.value = project.name
 setReady(false)
-if (restoreError) showNotice('The saved project could not be loaded. The example is open.')
+if (restoreError) showNotice(restoreError + ' The example is open. Autosave resumes when you open or reset a project.')
 
 try {
   preview = createPreview($('#scene'), $('#axes'))

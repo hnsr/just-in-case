@@ -1,15 +1,14 @@
 import { evaluateFormula, VARIABLE_NAME } from './formula.js'
 import {
   ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES,
-  SCREW_LAYOUTS, SCREW_POSITION_FIELDS, enclosureLayout, featureFields, fieldDefaults, lidRimWidth,
-  makePrimitive, parameterFields, screwPositions, supportsScrewClosure,
+  LOCATOR_RECESS_DEPTH, cornerFasteners, isScrewParameter, enclosureLayout, featureFields, fieldDefaults, lidRimWidth,
+  makePrimitive, parameterFields,
 } from './definitions.js'
 
 export const STORAGE_KEY = 'just-in-case.project.v2'
 export const LEGACY_STORAGE_KEY = 'just-in-case.project.v1'
 export const MAX_VARIABLES = 32
 export const MAX_FEATURES = 24
-export const MAX_SCREWS = 16
 export const MAX_OBJECTS = 40
 export const MAX_DEPTH = 6
 
@@ -38,11 +37,6 @@ export function makeChild(type, direct = true) {
 
 export function makeFeature(type, root) {
   const feature = { type, properties: {}, parameters: fieldDefaults(FEATURES[type].fields) }
-  if (type === 'screw-closure') {
-    feature.properties.layout = 'corners'
-    feature.parameters.pilotDepth = Math.min(feature.parameters.pilotDepth, root.parameters.height - root.parameters.floor)
-    return feature
-  }
   if (type !== 'cutout') return feature
 
   const p = root.parameters
@@ -117,86 +111,33 @@ function migrateV1(value) {
   return project
 }
 
-function roomAt({ x, y }, body, inset) {
-  const radius = Math.max(0, body.radius - inset)
-  const dx = Math.abs(x) - (body.width / 2 - inset - radius)
-  const dy = Math.abs(y) - (body.depth / 2 - inset - radius)
-  return radius - Math.hypot(Math.max(0, dx), Math.max(0, dy)) - Math.min(0, Math.max(dx, dy))
-}
-
-function validateScrewClosure(root, feature, path, mark) {
-  if (!supportsScrewClosure(root)) {
-    mark(path + '.properties.layout', 'Screw closure requires a lidded enclosure with a lid.')
-    return
+function validateCornerFasteners(p, field) {
+  const { x, y, bossRadius, collarRadius, envelopeRadius } = cornerFasteners(p)
+  if (bossRadius < collarRadius + 0.3) {
+    field('bossDiameter', 'Increase the boss diameter to support the locating collar around the lid hole.')
   }
-  const body = root.parameters
-  const f = feature.parameters
-  const issue = (key, message) => mark(path + '.parameters.' + key, message)
-  if (f.diameter < f.pilotDiameter + 1.2 || f.diameter <= f.clearanceDiameter) {
-    issue('diameter', 'The boss needs 0.6 mm around the pilot hole and must be wider than the lid hole.')
+  if (p.clearanceDiameter <= p.pilotDiameter) field('clearanceDiameter', 'The lid hole must be wider than the pilot hole.')
+  if (p.pilotDepth > p.height - p.floor) field('pilotDepth', 'The pilot hole must stop above the base floor.')
+  if (p.counterboreDepth > p.thickness - LOCATOR_RECESS_DEPTH - 0.7) {
+    field('counterboreDepth', 'Reduce the counterbore depth or thicken the lid to leave 0.7 mm between it and the locating recess.')
   }
-  if (f.clearanceDiameter <= f.pilotDiameter) issue('clearanceDiameter', 'The lid hole must be wider than the pilot hole.')
-  if (f.pilotDepth > body.height - body.floor) issue('pilotDepth', 'The screw closure pilot must stop above the outside floor.')
-  if (f.counterboreDepth > 0) {
-    if (f.counterboreDepth > body.thickness - 0.7) issue('counterboreDepth', 'Leave at least 0.7 mm of lid below the counterbore.')
-    if (f.counterboreDiameter <= f.clearanceDiameter) issue('counterboreDiameter', 'The counterbore must be wider than the lid hole.')
+  if (p.counterboreDepth > 0 && p.counterboreDiameter <= p.clearanceDiameter) {
+    field('counterboreDiameter', 'The counterbore must be wider than the lid hole.')
   }
-  if (feature.properties.layout === 'corners' && (f.insetX >= body.width / 2 || f.insetY >= body.depth / 2)) {
-    if (f.insetX >= body.width / 2) issue('insetX', 'Keep the X inset below half the enclosure width.')
-    if (f.insetY >= body.depth / 2) issue('insetY', 'Keep the Y inset below half the enclosure depth.')
-    return
+  if (Math.min(x, y) < envelopeRadius + 0.25) {
+    field('bossDiameter', 'The corner fasteners need more room. Enlarge the enclosure or reduce the boss or screw-hole diameters.')
   }
-
-  const cavityInset = body.wall + (body.lip > 0 ? body.clearance + lidRimWidth(body) : 0)
-  const diameter = f.counterboreDepth > 0 ? Math.max(f.diameter, f.counterboreDiameter) : f.diameter
-  const positions = screwPositions(body, feature)
-  const cornerIssues = new Map()
-  positions.forEach((position, index) => {
-    const placementIssue = (message, axes) => {
-      const fields = axes.length ? axes : ['X', 'Y']
-      if (feature.properties.layout === 'custom') {
-        for (const axis of fields) issue('positions.' + index + '.' + axis.toLowerCase(), 'Screw ' + (index + 1) + ' ' + message)
-      } else {
-        for (const axis of fields) cornerIssues.set('inset' + axis + '|' + message, ['inset' + axis, 'Corner screws ' + message])
-      }
-    }
-    const outsideAxes = (inset) => {
-      const axes = []
-      if (Math.abs(position.x) > body.width / 2 - inset) axes.push('X')
-      if (Math.abs(position.y) > body.depth / 2 - inset) axes.push('Y')
-      return axes
-    }
-    if (roomAt(position, body, cavityInset) < f.diameter / 2 + 0.25) {
-      placementIssue('must clear the inner walls and any lid lip. Move inward or reduce the boss diameter.',
-        outsideAxes(cavityInset + f.diameter / 2 + 0.25))
-    }
-    if (f.counterboreDepth > 0 && roomAt(position, body, 0) < f.counterboreDiameter / 2 + 0.7) {
-      placementIssue('must leave material between the counterbore and the lid edge. Move inward or reduce the counterbore diameter.',
-        outsideAxes(f.counterboreDiameter / 2 + 0.7))
-    }
-    const neighbor = positions.slice(0, index).findIndex((other) => Math.hypot(other.x - position.x, other.y - position.y) < diameter + 0.5)
-    if (neighbor >= 0) {
-      const other = positions[neighbor]
-      placementIssue('must have at least 0.5 mm between neighboring bosses and head recesses. Move them farther apart or reduce their diameters.',
-        feature.properties.layout === 'custom' ? [] : [position.x !== other.x ? 'X' : 'Y'])
-    }
-  })
-  for (const [key, message] of cornerIssues.values()) issue(key, message)
 }
 
 export function screwClosureDraftIssues(root, issues) {
-  if (!root || !supportsScrewClosure(root)) return []
-  const index = root.features.findIndex(({ type }) => type === 'screw-closure')
-  if (index < 0 || root.features.slice(index + 1).some(({ type }) => type === 'screw-closure')) return []
-  const prefix = 'root.features.' + index + '.parameters.'
-  return issues.every(({ field }) => field.startsWith(prefix)) ? issues : []
+  return root?.type === 'screw-fastened' && issues.every(({ field }) => isScrewParameter(field)) ? issues : []
 }
 
 function validateRoot(root, mark) {
   const p = root.parameters
   const { baseHeight, upperHeight, height, hasUpper } = enclosureLayout(root)
   const narrowest = Math.min(p.width, p.depth)
-  const lip = hasUpper ? p.lip : 0
+  const lip = hasUpper ? p.lip ?? 0 : 0
   const thickness = hasUpper ? p.thickness : 0
   const wallTop = root.type === 'split' ? height - thickness : baseHeight
   const field = (key, message) => mark('root.parameters.' + key, message)
@@ -209,16 +150,9 @@ function validateRoot(root, mark) {
     field('clearance', 'Reduce the wall thickness or clearance to leave room inside the lip.')
   }
 
-  let screwClosureSeen = false
+  if (root.type === 'screw-fastened') validateCornerFasteners(p, field)
   root.features.forEach((feature, index) => {
     const f = feature.parameters
-    const path = 'root.features.' + index
-    if (feature.type === 'screw-closure') {
-      if (screwClosureSeen) mark(path + '.properties.layout', 'An enclosure can have only one screw closure.')
-      else validateScrewClosure(root, feature, path, mark)
-      screwClosureSeen = true
-      return
-    }
     const label = FEATURES[feature.type].label + ' ' + (index + 1)
     const issue = (key, message) => mark('root.features.' + index + '.parameters.' + key, label + ' ' + message)
     const wallLength = ['Front', 'Back'].includes(feature.properties.side) ? p.width : p.depth
@@ -283,28 +217,15 @@ export function evaluateProject(project) {
   }
 
   function visitFeature(feature, path, root) {
-    demand(record(feature) && Object.hasOwn(FEATURES, feature.type) && record(feature.properties), 'This project contains an unknown feature.')
-    const { type } = feature
-    let properties
-    if (type === 'cutout') {
-      const { side, shape, placement = 'height' } = feature.properties
-      demand(SIDES.includes(side) && SHAPES.includes(shape), 'A wall cutout is missing its wall or shape.')
-      demand(placement === 'height' || (placement === 'seam' && root.type === 'split'),
-        'Choose a wall cutout placement supported by the enclosure.')
-      properties = { side, shape, placement }
-    } else {
-      const { layout } = feature.properties
-      demand(Object.hasOwn(SCREW_LAYOUTS, layout), 'Choose a screw closure layout.')
-      properties = { layout }
-    }
+    demand(feature?.type !== 'screw-closure', 'Screw closure is now built into the Screw-fastened enclosure type.')
+    demand(record(feature) && feature.type === 'cutout' && record(feature.properties), 'This project contains an unknown feature.')
+    const { side, shape, placement = 'height' } = feature.properties
+    demand(SIDES.includes(side) && SHAPES.includes(shape), 'A wall cutout is missing its wall or shape.')
+    demand(placement === 'height' || (placement === 'seam' && root.type === 'split'),
+      'Choose a wall cutout placement supported by the enclosure.')
     const parameters = fields(feature.parameters, featureFields(feature), path + '.parameters')
-    if (properties.placement === 'seam') parameters.z = root.parameters.seam
-    if (properties.layout === 'custom') {
-      const { positions } = feature.parameters
-      demand(Array.isArray(positions) && positions.length >= 1 && positions.length <= MAX_SCREWS, 'A custom screw closure needs 1 to ' + MAX_SCREWS + ' positions.')
-      parameters.positions = positions.map((position, index) => fields(position, SCREW_POSITION_FIELDS, path + '.parameters.positions.' + index))
-    }
-    return { type, properties, parameters }
+    if (placement === 'seam') parameters.z = root.parameters.seam
+    return { type: feature.type, properties: { side, shape, placement }, parameters }
   }
 
   function visit(object, path, depth, hasUpper) {
@@ -312,7 +233,7 @@ export function evaluateProject(project) {
     demand(depth <= MAX_DEPTH && objectCount <= MAX_OBJECTS, 'The object hierarchy is too large.')
     const root = depth === 0
     demand(record(object) && Object.hasOwn(root ? ROOT_TYPES : CHILD_TYPES, object.type) && record(object.properties),
-      root ? 'Choose a lidded or split enclosure as the project root.' : 'This project contains an unknown child object.')
+      root ? 'Choose an enclosure type as the project root.' : 'This project contains an unknown child object.')
     demand(Array.isArray(object.features) && object.features.length <= (root ? MAX_FEATURES : 0) &&
       Array.isArray(object.children) && object.children.length < MAX_OBJECTS, 'This object contains unsupported features or too many children.')
     const { type } = object
@@ -362,7 +283,7 @@ export function evaluateProject(project) {
       if (diameter < pilotDiameter + 1.2) mark(path + '.parameters.pilotDiameter', 'Leave at least 0.6 mm of material around each pilot hole.')
       if (pilotDepth > height) mark(path + '.parameters.pilotDepth', 'The pilot hole must stop at or above the bottom of the post.')
     }
-    if (root) hasUpper = type === 'split' || next.properties.includeLid
+    if (root) hasUpper = enclosureLayout(next).hasUpper
     next.features = object.features.map((feature, index) => visitFeature(feature, path + '.features.' + index, next))
     next.children = object.children.map((child, index) => visit(child, path + '.children.' + index, depth + 1, hasUpper))
     return next

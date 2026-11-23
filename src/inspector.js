@@ -1,9 +1,8 @@
 import {
   ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES, CUTOUT_PLACEMENTS,
-  SCREW_LAYOUTS, SCREW_POSITION_FIELDS, enclosureLayout, featureFields, makePrimitive, parameterFields,
-  screwPositions, supportsScrewClosure,
+  SCREW_FIELDS, isScrewParameter, enclosureLayout, featureFields, makePrimitive, parameterFields,
 } from './definitions.js'
-import { MAX_DEPTH, MAX_FEATURES, MAX_OBJECTS, MAX_SCREWS, MAX_VARIABLES, makeChild, makeFeature, newProject, objectAt } from './project.js'
+import { MAX_DEPTH, MAX_FEATURES, MAX_OBJECTS, MAX_VARIABLES, makeChild, makeFeature, newProject, objectAt } from './project.js'
 import { addIcons } from './icons.js'
 
 const $ = (selector) => document.querySelector(selector)
@@ -317,78 +316,25 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     addIcons(list)
   }
 
-  function nextScrewPosition(positions) {
-    const root = getEvaluatedRoot() ?? newProject().root
-    const resolved = root.features.find(({ type }) => type === 'screw-closure')?.parameters
-    const diameter = resolved?.counterboreDepth > 0 ? Math.max(resolved.diameter, resolved.counterboreDiameter) : resolved?.diameter
-    const spacing = (diameter ?? FEATURES['screw-closure'].fields.diameter.value) + 0.5
-    const offsets = (length) => [0, -length / 4, length / 4, -length / 8, length / 8]
-    const candidates = offsets(root.parameters.width).flatMap((x) => offsets(root.parameters.depth).map((y) => ({ x, y })))
-    const used = resolved?.positions?.length === positions.length ? resolved.positions : positions
-    return candidates.find(({ x, y }) => used.every((point) => Math.hypot(point.x - x, point.y - y) >= spacing)) ?? candidates[0]
-  }
-
-  function customScrewFields(feature, key) {
-    const list = element('div', 'screw-positions')
-    const positions = feature.parameters.positions
-    const prefix = key + '.parameters.positions.'
-    list.append(element('p', 'field-hint', 'Measure X and Y from the enclosure center in the assembled view.'))
-
-    positions.forEach((position, index) => {
-      const row = element('div', 'screw-position')
-      const label = 'Screw ' + (index + 1)
-      row.setAttribute('role', 'group')
-      row.setAttribute('aria-label', label)
-      const remove = button('', 'trash', 'icon-button', () => {
-        positions.splice(index, 1)
-        renderSelected()
-        selected.querySelector('[data-field="' + prefix + Math.min(index, positions.length - 1) + '.x"]').focus()
-        onChange()
-      })
-      remove.setAttribute('aria-label', 'Remove ' + label.toLowerCase())
-      remove.title = positions.length === 1 ? 'Keep at least one screw position' : 'Remove screw position'
-      remove.disabled = positions.length === 1
-      const dimensions = { ...SCREW_POSITION_FIELDS, x: { ...SCREW_POSITION_FIELDS.x, label: label + ' X' } }
-      row.append(fields(dimensions, position, prefix + index), remove)
-      list.append(row)
-    })
-    const add = button('Add screw position', 'plus', 'button button-small', () => {
-      const index = positions.push(nextScrewPosition(positions)) - 1
-      renderSelected()
-      selected.querySelector('[data-field="' + prefix + index + '.x"]').focus()
-      onChange()
-    })
-    add.disabled = positions.length >= MAX_SCREWS
-    list.append(add)
-    return list
-  }
-
   function featureCard(feature, index, enclosureType) {
     const key = path + '.features.' + index
-    const { type, properties, parameters } = feature
-    const cutout = type === 'cutout'
-    const atSeam = cutout && properties.placement === 'seam'
-    const title = cutout ? properties.side + ' wall cutout' : FEATURES[type].label
-    const summary = cutout ? properties.shape + (atSeam ? ' · Seam' : '') : undefined
+    const { properties, parameters } = feature
+    const atSeam = properties.placement === 'seam'
+    const title = properties.side + ' wall cutout'
+    const summary = properties.shape + (atSeam ? ' · Seam' : '')
     const { details, content } = disclosure(title, key, { summary })
     details.classList.add('feature-card')
-    if (cutout) {
-      const options = element('div', 'fields feature-options')
-      options.append(
-        selectField(key + '.properties.side', 'Wall', SIDES.map((side) => [side, side]), properties.side),
-        selectField(key + '.properties.shape', 'Shape', SHAPES.map((shape) => [shape, shape]), properties.shape),
-      )
-      content.append(options)
-      if (enclosureType === 'split') {
-        const placement = element('div', 'feature-options')
-        placement.append(selectField(key + '.properties.placement', 'Placement',
-          Object.entries(CUTOUT_PLACEMENTS), properties.placement ?? 'height'))
-        content.append(placement)
-      }
-    } else if (type === 'screw-closure') {
-      const options = element('div', 'feature-options')
-      options.append(selectField(key + '.properties.layout', 'Screw layout', Object.entries(SCREW_LAYOUTS), properties.layout))
-      content.append(options)
+    const options = element('div', 'fields feature-options')
+    options.append(
+      selectField(key + '.properties.side', 'Wall', SIDES.map((side) => [side, side]), properties.side),
+      selectField(key + '.properties.shape', 'Shape', SHAPES.map((shape) => [shape, shape]), properties.shape),
+    )
+    content.append(options)
+    if (enclosureType === 'split') {
+      const placement = element('div', 'feature-options')
+      placement.append(selectField(key + '.properties.placement', 'Placement',
+        Object.entries(CUTOUT_PLACEMENTS), properties.placement ?? 'height'))
+      content.append(placement)
     }
     const issue = element('p', 'field-hint feature-issue')
     issue.hidden = true
@@ -396,10 +342,6 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     issue.dataset.featureIssue = key
     content.append(issue, fields(featureFields(feature), parameters, key + '.parameters'))
     if (atSeam) content.append(element('p', 'field-hint', 'Follows the lower half height and opens the lip at this cutout.'))
-    if (type === 'screw-closure') {
-      content.append(element('p', 'field-hint', 'The base bosses reach the lid. Set counterbore depth to 0 for plain lid holes.'))
-      if (properties.layout === 'custom') content.append(customScrewFields(feature, key))
-    }
     const remove = button('Remove feature', 'trash', 'button button-quiet button-small remove-feature', () => {
       objectAt(getProject(), path).features.splice(index, 1)
       renderSelected()
@@ -477,7 +419,8 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       repeatSettings.hidden = object.parameters.count === 1
       parameterPanel.content.append(primitiveBox, fields({ count }, object.parameters, path + '.parameters'), repeatSettings)
     } else {
-      parameterPanel.content.append(fields(parameterFields(object), object.parameters, path + '.parameters'))
+      const schema = Object.fromEntries(Object.entries(parameterFields(object)).filter(([key]) => !isRoot || !Object.hasOwn(SCREW_FIELDS, key)))
+      parameterPanel.content.append(fields(schema, object.parameters, path + '.parameters'))
     }
     if (object.type === 'pcb-mount') {
       parameterPanel.content.append(element('p', 'field-hint', 'Four clips support the board and grip two opposite edges.'))
@@ -486,6 +429,16 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       parameterPanel.content.append(element('p', 'field-hint', 'Hole spacing is measured center to center. Placement moves and rotates all four posts together.'))
     }
     selected.append(parameterPanel.details)
+    if (object.type === 'screw-fastened') {
+      const screws = disclosure('Screw closure', path + '.screws', { glyph: 'bolt', open: true })
+      const issue = element('p', 'field-hint feature-issue')
+      issue.hidden = true
+      issue.setAttribute('role', 'status')
+      issue.dataset.screwIssues = ''
+      screws.content.append(issue, fields(SCREW_FIELDS, object.parameters, path + '.parameters'),
+        element('p', 'field-hint', 'Two diagonal collars align the lid. Set counterbore depth to 0 for plain lid holes.'))
+      selected.append(screws.details)
+    }
 
     if (!isRoot) {
       const placement = disclosure('Placement', path + '.placement', { glyph: 'fit', open: true })
@@ -511,9 +464,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
         featurePanel.content.append(element('p', 'field-hint leading-hint', 'Wall offsets start at the midpoint. Positive follows X on front and back, or Y on left and right.'))
       }
       object.features.forEach((feature, index) => featurePanel.content.append(featureCard(feature, index, object.type)))
-      const choices = Object.entries(FEATURES)
-        .filter(([type]) => type !== 'screw-closure' || (supportsScrewClosure(object) && !object.features.some((feature) => feature.type === type)))
-        .map(([type, spec]) => [type, spec.label])
+      const choices = Object.entries(FEATURES).map(([type, spec]) => [type, spec.label])
       featurePanel.content.append(picker('Add feature', choices, (type) => {
         const root = getEvaluatedRoot() ?? newProject(object.type, object.properties.includeLid).root
         const index = object.features.push(makeFeature(type, root)) - 1
@@ -538,18 +489,6 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     const fieldName = key.slice(split + 1)
     const value = control.value
     const numeric = control.hasAttribute('data-formula') ? parseNumberLiteral(value) : undefined
-    if (key.endsWith('.properties.layout')) {
-      const feature = objectAt(getProject(), key.slice(0, key.lastIndexOf('.properties.')))
-      const defaults = FEATURES['screw-closure'].fields
-      feature.parameters.insetX ??= defaults.insetX.value
-      feature.parameters.insetY ??= defaults.insetY.value
-      if (value === 'custom' && !feature.parameters.positions) {
-        const root = getEvaluatedRoot() ?? newProject().root
-        const resolved = root.features.find(({ type }) => type === 'screw-closure')
-        const corners = resolved ?? makeFeature('screw-closure', root)
-        feature.parameters.positions = screwPositions(root.parameters, corners)
-      }
-    }
     if (key.endsWith('.primitive.type')) {
       objectAt(getProject(), path).parameters.primitive = makePrimitive(value)
     } else {
@@ -618,6 +557,13 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
         .map(({ message }) => message)
       report.textContent = [...new Set(messages)].join(' ')
       report.hidden = messages.length === 0
+    }
+    const screwReport = selected.querySelector('[data-screw-issues]')
+    if (screwReport) {
+      const messages = evaluation.issues.filter(({ field }) => isScrewParameter(field)).map(({ message }) => message)
+      screwReport.textContent = [...new Set(messages)].join(' ')
+      screwReport.hidden = messages.length === 0
+      screwReport.closest('details').classList.toggle('has-issue', messages.length > 0)
     }
     const variableError = evaluation.issues.some(({ field }) => field.startsWith('variables.'))
     variablesToggle.classList.toggle('has-issue', variableError)

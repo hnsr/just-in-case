@@ -17,12 +17,12 @@ Open the local URL Vite prints. Run `npm test` to check the geometry and project
 
 ## Design and print
 
-Use **Change enclosure** to choose a lidded, base-only, or split case. Confirming the change resets the current project, so use **Save JSON** first if you want to keep it. Select an object in the left-hand tree to edit it and highlight its surfaces in the preview. Selecting a cutter also shows its full shape as a dashed outline. Use **+** on a row to add a child or the trash icon to remove the object.
+Use **Change enclosure** to choose a lidded, base-only, screw-fastened, or split case. Confirming the change resets the current project, so use **Save JSON** first if you want to keep it. Select an object in the left-hand tree to edit it and highlight its surfaces in the preview. Selecting a cutter also shows its full shape as a dashed outline. Use **+** on a row to add a child or the trash icon to remove the object.
 
 - Open **Variables** beside the project name to edit project-wide numbers and formulas. Use a name like `boardWidth` in a field such as `boardWidth + 16`. Formulas support parentheses and the operators `+`, `-`, `*`, `/`, `%`, and `^`. Dimensions are in millimetres and rotations are in degrees.
 - Focus a field containing a plain number and scroll up or down to adjust it by one. Hold **Shift** for 0.1-unit steps in fields that allow decimals.
 - **Wall cutouts** are positioned from the midpoint of the chosen wall and the bottom of the enclosure. In a split enclosure, choose **At split seam** to center the opening on the seam and open the lip so the halves can close around a cable.
-- **Screw closure** adds matching base bosses and lid holes to a lidded enclosure. Use four adjustable corner positions or a custom layout. Set counterbore depth to 0 for plain lid holes.
+- **Screw-fastened enclosures** have a flat lid and four screw bosses joined to the base walls. Two diagonal collars seat in a round recess and a slotted recess in the lid. Adjust the locator fit and screw sizes under **Screw closure**. Set counterbore depth to 0 for plain lid holes.
 - **PCB screw mounts** add four posts with blind pilot holes. Set the board's X and Y hole spacing, then position and rotate the pattern as a child object. Add a separate mount for each board.
 - **PCB press-fit mounts** add four clips to support and grip the edges of a board. Size the clips to your board and printer tolerances.
 - **Geometry** adds or cuts a box, cylinder, or sphere on its parent. Set **Copies** above 1 to repeat the shape with a step and rotation per copy. Child objects use the Geometry object’s origin.
