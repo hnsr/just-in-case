@@ -65,6 +65,13 @@ function floorCutter() {
   return cutter
 }
 
+function snapFitMount() {
+  const mount = makeChild('pcb-corner-mount')
+  mount.properties.fastening = 'snap-fit'
+  Object.assign(mount.parameters, { seatSize: 6, clipOverhang: 0.35 })
+  return mount
+}
+
 function hasVertex(mesh, x, y, z) {
   const { vertices, stride } = mesh
   for (let i = 0; i < vertices.length; i += stride) {
@@ -94,7 +101,7 @@ test('the default base and lid export as closed meshes on the print bed', () => 
   assert.equal(both.triangleCount, base.triangleCount + lid.triangleCount)
 })
 
-test('ports on all four walls remove material and screw posts add it', () => {
+test('ports on all four walls remove material and PCB corner mounts add it', () => {
   const project = newProject()
   project.root.parameters.radius = 0
   project.root.parameters.lip = 0
@@ -105,7 +112,7 @@ test('ports on all four walls remove material and screw posts add it', () => {
     assert(baseVolume() < before - 90, side + ' port must cut through its wall')
   }
   const portsOnly = baseVolume()
-  project.root.children.push(makeChild('pcb-screw-mount'))
+  project.root.children.push(makeChild('pcb-corner-mount'))
   assert(baseVolume() > portsOnly)
   assert.deepEqual(inspectSTL(enclosureSTL(build(project), 'upper')).max, [50, 35, 2.4])
 })
@@ -327,11 +334,15 @@ test('legacy screw posts open as a positioned PCB screw mount', () => {
   assert.equal(migrated.name, source.name)
   assert.deepEqual(migrated.root.features, defaultProject().root.features)
   const [mount] = migrated.root.children
-  assert.equal(mount.type, 'pcb-screw-mount')
-  assert.deepEqual(mount.parameters, { pitchX: 76, pitchY: 46, height: 6, diameter: 7, pilotDiameter: 2.7, pilotDepth: 6 })
+  assert.equal(mount.type, 'pcb-corner-mount')
+  assert.equal(mount.properties.fastening, 'screw')
+  assert.deepEqual(mount.parameters, {
+    boardWidth: 83, boardDepth: 53, boardThickness: 1.6, baseHeight: 6, wallThickness: 1.6, clearance: 0.2,
+    pilotDiameter: 2.7, holeInsetX: 3.5, holeInsetY: 3.5,
+  })
   assert.deepEqual(parseProject(projectJSON(migrated)), migrated)
   const model = build(migrated)
-  assert(hasVertex(model.base, 38 + 3.5, 23, 8.4))
+  assert(hasVertex(model.base, 38 + 1.35, 23, 8.4))
   inspectSTL(enclosureSTL(model, 'both'))
   source.mounts.enabled = false
   assert.equal(parseProject(JSON.stringify(source)).root.children.length, 0)
@@ -339,22 +350,77 @@ test('legacy screw posts open as a positioned PCB screw mount', () => {
   assert.throws(() => parseProject('['), /valid JSON/)
 })
 
-test('PCB screw mounts can be placed and rotated independently with blind pilot holes', () => {
+test('screw corner mounts locate both edges and keep four blind holes at the board insets when rotated', () => {
   const project = newProject()
-  const a = makeChild('pcb-screw-mount')
-  const b = makeChild('pcb-screw-mount')
-  Object.assign(a.parameters, { pitchX: 12, pitchY: 10, height: 5, pilotDepth: 3 })
-  Object.assign(b.parameters, { pitchX: 12, pitchY: 10 })
+  const a = makeChild('pcb-corner-mount')
+  const b = makeChild('pcb-corner-mount')
+  const dimensions = { boardWidth: 18, boardDepth: 16, holeInsetX: 3, holeInsetY: 3 }
+  Object.assign(a.parameters, dimensions, { baseHeight: 5 })
+  Object.assign(b.parameters, dimensions)
   Object.assign(a.placement, { x: -22, angle: 90 })
   Object.assign(b.placement, { x: 22, y: -3 })
   project.root.children.push(a, b)
   const model = build(project)
-  assert(hasVertex(model.base, -27 + 3.5, 6, 7.4), 'first post follows the rotated hole pattern')
-  assert(hasVertex(model.base, -27 + 1.35, 6, 4.4), 'the pilot stops above the floor')
-  assert(hasVertex(model.base, 28 + 3.5, 2, 8.4), 'second post retains its separate placement')
+  const surface = raycastSurface(model.base)
+  const down = new THREE.Vector3(0, 0, -1)
+  const zAt = (x, y) => new THREE.Raycaster(new THREE.Vector3(x, y, 20), down).intersectObject(surface)[0].point.z
+  const near = (actual, expected) => assert(Math.abs(actual - expected) < 0.001)
+  for (const x of [-27, -17]) {
+    for (const y of [-6, 6]) near(zAt(x, y), 3.4)
+  }
+  near(zAt(-26, 5), 7.4)
+  near(zAt(-30.5, 6), 9)
+  near(zAt(-27, 9.5), 9)
+  near(zAt(28, 2), 3.4)
+  near(zAt(27, 1), 8.4)
   assert(model.base.runs.some(({ path }) => path === 'root.children.0'))
   assert(model.base.runs.some(({ path }) => path === 'root.children.1'))
   inspectSTL(enclosureSTL(model, 'base'))
+  const sample = buildSample(geometry, evaluateSample(project, 'root.children.0'))
+  assert.equal(sample.floatingPieces, 0)
+  assert.deepEqual(inspectSTL(sampleSTL(sample)).max, [9.8, 10.8, 6.65])
+  surface.geometry.dispose()
+  surface.material.dispose()
+})
+
+test('snap-fit corner samples have four seats, two fixed catches, and relief beside the flexible fingers', () => {
+  const project = newProject()
+  const mount = snapFitMount()
+  project.root.children.push(mount)
+  const sample = buildSample(geometry, evaluateSample(project, 'root.children.0'))
+  assert.equal(sample.floatingPieces, 0)
+  const surface = raycastSurface(sample.mesh)
+  const cast = (start, direction) => new THREE.Raycaster(new THREE.Vector3(...start), new THREE.Vector3(...direction))
+    .intersectObject(surface).map(({ point }) => point)
+  const near = (actual, expected) => assert(Math.abs(actual - expected) < 0.001)
+  for (const x of [-17, 17]) {
+    for (const y of [-12, 12]) near(cast([x, y, 12], [0, 0, -1])[0].z, 6.05)
+    for (const y of [-14.8, 14.8]) near(cast([x, y, 6.1], [0, 0, 1])[0].z, 8)
+  }
+  for (const x of [-16, 16]) {
+    const section = cast([x, -18, 4], [0, 1, 0])
+    for (const y of [-16.35, -15.25, -14.6, 16.8]) assert(section.some((point) => Math.abs(point.y - y) < 0.001))
+    assert(!cast([Math.sign(x) * 17.8, -18, 7], [0, 1, 0]).some(({ y }) => y < -14))
+  }
+  inspectSTL(sampleSTL(sample))
+  surface.geometry.dispose()
+  surface.material.dispose()
+})
+
+test('PCB corner mount validation uses the selected mode and rejects intersecting seats or misplaced holes', () => {
+  const project = newProject()
+  const mount = makeChild('pcb-corner-mount')
+  project.root.children.push(mount)
+  assert.deepEqual(evaluateProject(project).issues, [])
+  mount.parameters.holeInsetX = 1
+  mount.parameters.baseHeight = 1
+  assert.deepEqual(evaluateProject(project).issues.map(({ field }) => field.split('.').at(-1)), ['holeInsetX', 'baseHeight'])
+  const snap = snapFitMount()
+  Object.assign(mount.parameters, snap.parameters, { seatSize: 20, pilotDiameter: 'unused' })
+  mount.properties.fastening = 'snap-fit'
+  assert.throws(() => evaluateSample(project, 'root.children.0'), /Reduce the corner seat size/)
+  mount.parameters.seatSize = 6
+  assert.deepEqual(evaluateProject(project).issues, [])
 })
 
 test('the screw-fastened enclosure has a flat lid and four integral corner bosses with matching holes', () => {
@@ -580,10 +646,10 @@ test('a lidded enclosure can be instantiated as a base-only project', () => {
   assert.throws(() => enclosureSTL(model, 'both'), /requested parts/)
 })
 
-test('press-fit clips join the selected part and a cut repeater makes holes', () => {
+test('snap-fit mounts join the selected part and a cut repeater makes holes', () => {
   const project = newProject('split')
   const initial = build(project)
-  const pcb = makeChild('pcb-mount')
+  const pcb = snapFitMount()
   pcb.placement.part = 'upper'
   project.root.children.push(pcb)
   const mounted = build(project)
@@ -644,7 +710,7 @@ test('individual repeats can translate and rotate a primitive', () => {
 
 test('preview faces identify their object after nesting, cutting, and splitting the parts', () => {
   const project = newProject('split')
-  const clip = makeChild('pcb-mount')
+  const clip = snapFitMount()
   clip.placement.part = 'upper'
   const parent = makeChild('repeater')
   parent.placement.y = -9
@@ -995,7 +1061,7 @@ test('a reference branch inherits transforms and stays out of both printable par
   const connector = makeChild('repeater', false)
   connector.properties.reference = false
   Object.assign(connector.placement, { x: 7, y: 2, z: 3 })
-  const mounts = makeChild('pcb-screw-mount', false)
+  const mounts = makeChild('pcb-corner-mount', false)
   board.children.push(connector, mounts)
   project.root.children.push(board)
 

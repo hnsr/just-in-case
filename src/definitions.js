@@ -35,29 +35,36 @@ export const LOCATOR_HEIGHT = 0.8
 export const LOCATOR_RECESS_DEPTH = 1
 export const LOCATOR_SLOT_TRAVEL = 0.5
 
-export const CHILD_TYPES = {
-  'pcb-screw-mount': {
-    label: 'PCB screw mounts', icon: 'bolt',
+export const PCB_MOUNT_FASTENINGS = {
+  screw: {
+    label: 'Screw',
     fields: {
-      pitchX: mm('X hole spacing', 32, 2, 400),
-      pitchY: mm('Y hole spacing', 24, 2, 400),
-      height: mm('Post height', 6, 1, 60),
-      diameter: mm('Post diameter', 7, 2, 30),
       pilotDiameter: mm('Pilot hole diameter', 2.7, 0.5, 12),
-      pilotDepth: mm('Pilot hole depth', 5, 0.5, 60),
+      holeInsetX: mm('Hole X inset', 4, 0.25, 180),
+      holeInsetY: mm('Hole Y inset', 3, 0.25, 180),
     },
   },
-  'pcb-mount': {
-    label: 'PCB press-fit mounts', icon: 'bolt',
+  'snap-fit': {
+    label: 'Snap-fit',
     fields: {
-      boardWidth: mm('Board width', 40, 12, 360),
-      boardDepth: mm('Board depth', 30, 12, 360),
+      seatSize: mm('Corner seat size', 6, 5, 40),
+      clipOverhang: mm('Clip overhang', 0.35, 0.1, 1.5),
+    },
+  },
+}
+
+export const PCB_PILOT_MARGIN = 1
+
+export const CHILD_TYPES = {
+  'pcb-corner-mount': {
+    label: 'PCB corner mount', icon: 'bolt',
+    fields: {
+      boardWidth: mm('Board width', 40, 12, 400),
+      boardDepth: mm('Board depth', 30, 12, 400),
       boardThickness: mm('Board thickness', 1.6, 0.5, 5),
-      support: mm('Board height above floor', 4, 2, 45),
+      baseHeight: mm('Base height', 6, 1, 60),
+      wallThickness: mm('Corner wall thickness', 1.6, 0.8, 4),
       clearance: mm('Edge clearance per side', 0.2, 0, 1.5),
-      grip: mm('Clip overhang', 0.35, 0.15, 1.5),
-      wall: mm('Clip thickness', 1.4, 0.8, 4),
-      length: mm('Clip length', 5, 2, 40),
     },
   },
   repeater: {
@@ -149,6 +156,12 @@ export function rectangleCorners(x, y) {
   return [{ x, y }, { x: -x, y }, { x: -x, y: -y }, { x, y: -y }]
 }
 
+export function pcbSeatSize(p, fastening) {
+  if (fastening === 'snap-fit') return [p.seatSize, p.seatSize]
+  const edge = p.pilotDiameter / 2 + PCB_PILOT_MARGIN
+  return [p.holeInsetX + edge, p.holeInsetY + edge]
+}
+
 export function cornerFasteners(p) {
   const bossRadius = p.bossDiameter / 2
   const collarRadius = p.clearanceDiameter / 2 + 1
@@ -180,7 +193,9 @@ export function parameterFields(object) {
       thickness: mm('Ceiling thickness', 2.4, 1, 12),
     }
   }
-  return CHILD_TYPES[object.type].fields
+  const { fields } = CHILD_TYPES[object.type]
+  if (object.type === 'pcb-corner-mount') return { ...fields, ...PCB_MOUNT_FASTENINGS[object.properties.fastening].fields }
+  return fields
 }
 
 export function featureFields(feature) {

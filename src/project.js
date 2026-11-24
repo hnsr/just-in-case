@@ -2,6 +2,7 @@ import { evaluateFormula, VARIABLE_NAME } from './formula.js'
 import {
   ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES,
   CABLE_DUCT_FITS, cableDuctMinimumWidth,
+  PCB_MOUNT_FASTENINGS, PCB_PILOT_MARGIN, pcbSeatSize,
   LOCATOR_RECESS_DEPTH, cornerFasteners, isScrewParameter, enclosureLayout, featureFields, fieldDefaults, lidRimWidth,
   makePrimitive, parameterFields,
 } from './definitions.js'
@@ -27,12 +28,13 @@ export function makeChild(type, direct = true) {
   const object = {
     type,
     name: CHILD_TYPES[type].label,
-    properties: type === 'repeater' ? { operation: 'add' } : {},
-    parameters: fieldDefaults(CHILD_TYPES[type].fields),
+    properties: type === 'repeater' ? { operation: 'add' } : { fastening: 'screw' },
+    parameters: {},
     placement: { ...fieldDefaults(PLACEMENT_FIELDS), ...(direct ? { part: 'base' } : {}) },
     features: [],
     children: [],
   }
+  object.parameters = fieldDefaults(parameterFields(object))
   if (type === 'repeater') {
     object.parameters.primitive = makePrimitive('box')
     if (direct) object.placement.x = -15
@@ -90,7 +92,7 @@ export function defaultProject() {
     { type: 'cutout', properties: { side: 'Front', shape: 'Rectangle' }, parameters: { width: 16, height: 8, offset: -21, z: 12 } },
     { type: 'cutout', properties: { side: 'Right', shape: 'Circle' }, parameters: { width: 11, offset: 9, z: 14 } },
   ]
-  project.root.children.push(makeChild('pcb-screw-mount'))
+  project.root.children.push(makeChild('pcb-corner-mount'))
   return project
 }
 
@@ -102,15 +104,50 @@ function demand(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+function formulaTerm(value) {
+  return '(' + String(value).trim().replace(/^=\s*/, '') + ')'
+}
+
+function screwCornerParameters({ pitchX, pitchY, height, diameter, pilotDiameter }) {
+  // Earlier mounts specified hole spacing. Use half the old post width as the
+  // estimated board inset, which keeps all four screw centers in place.
+  const inset = typeof diameter === 'number' ? diameter / 2 : formulaTerm(diameter) + ' / 2'
+  const boardSize = (pitch) => typeof pitch === 'number' && typeof diameter === 'number'
+    ? pitch + diameter : formulaTerm(pitch) + ' + ' + formulaTerm(diameter)
+  return { boardWidth: boardSize(pitchX), boardDepth: boardSize(pitchY), baseHeight: height, pilotDiameter,
+    holeInsetX: inset, holeInsetY: inset }
+}
+
 function legacyScrewMount(body, { height, diameter, hole, inset }) {
   function spacing(size) {
     if (typeof size === 'number' && typeof inset === 'number') return size - 2 * inset
-    const formula = (value) => String(value).trim().replace(/^=\s*/, '')
-    return '(' + formula(size) + ') - 2 * (' + formula(inset) + ')'
+    return formulaTerm(size) + ' - 2 * ' + formulaTerm(inset)
   }
-  const mount = makeChild('pcb-screw-mount')
-  mount.parameters = { pitchX: spacing(body.width), pitchY: spacing(body.depth), height, diameter, pilotDiameter: hole, pilotDepth: height }
+  const mount = makeChild('pcb-corner-mount')
+  Object.assign(mount.parameters, screwCornerParameters({
+    pitchX: spacing(body.width), pitchY: spacing(body.depth), height, diameter, pilotDiameter: hole,
+  }))
   return mount
+}
+
+function migratePCBMounts(object, depth = 0) {
+  if (depth > MAX_DEPTH || !record(object)) return
+  const { type, parameters: old } = object
+  if (record(old) && (type === 'pcb-screw-mount' || type === 'pcb-mount')) {
+    const screw = type === 'pcb-screw-mount'
+    const fastening = screw ? 'screw' : 'snap-fit'
+    const dimensions = screw ? screwCornerParameters(old) : {
+      boardWidth: old.boardWidth, boardDepth: old.boardDepth, boardThickness: old.boardThickness,
+      baseHeight: old.support, wallThickness: old.wall, clearance: old.clearance, clipOverhang: old.grip, seatSize: 5,
+    }
+    object.type = 'pcb-corner-mount'
+    object.properties = { fastening }
+    object.parameters = { ...fieldDefaults(parameterFields(object)), ...dimensions }
+    if (object.name === (screw ? 'PCB screw mounts' : 'PCB press-fit mounts')) {
+      object.name = CHILD_TYPES[object.type].label
+    }
+  }
+  if (Array.isArray(object.children)) object.children.forEach((child) => migratePCBMounts(child, depth + 1))
 }
 
 function migrateV1(value) {
@@ -159,6 +196,31 @@ function validateCableDuct(f, issue) {
   if (f.baseWidth < minimumWidth - 1e-8) {
     const width = Math.ceil((minimumWidth - 1e-8) * 100) / 100
     issue('baseWidth', 'needs a base at least ' + width + ' mm wide for this cable and its rails.')
+  }
+}
+
+function validatePCBMount(p, fastening, issue) {
+  const [seatX, seatY] = pcbSeatSize(p, fastening)
+  if (fastening === 'snap-fit') {
+    if (2 * seatX + 0.5 > Math.min(p.boardWidth, p.boardDepth)) {
+      issue('seatSize', 'Reduce the corner seat size to leave at least 0.5 mm between the seats.')
+    }
+    return
+  }
+  const radius = p.pilotDiameter / 2
+  const minimumInset = radius + Math.max(0, PCB_PILOT_MARGIN - p.clearance - p.wallThickness)
+  for (const [field, inset, seat, size] of [
+    ['holeInsetX', p.holeInsetX, seatX, p.boardWidth],
+    ['holeInsetY', p.holeInsetY, seatY, p.boardDepth],
+  ]) {
+    if (inset < minimumInset - 1e-8) {
+      issue(field, 'Increase the hole inset or reduce the pilot hole diameter so the hole fits inside the board corner and seat.')
+    } else if (2 * seat + 0.5 > size) {
+      issue(field, 'Reduce the hole inset or diameter, or increase the board size to leave 0.5 mm between the seats.')
+    }
+  }
+  if (p.baseHeight < PCB_PILOT_MARGIN + 0.5) {
+    issue('baseHeight', 'Use at least 1.5 mm of base height for a blind pilot hole.')
   }
 }
 
@@ -298,6 +360,11 @@ function evaluate(project, samplePath) {
       demand(Object.hasOwn(REPEATER_OPERATIONS, object.properties.operation), 'Choose whether the geometry adds or cuts material.')
       next.properties.operation = object.properties.operation
     }
+    if (type === 'pcb-corner-mount') {
+      const { fastening } = object.properties
+      demand(Object.hasOwn(PCB_MOUNT_FASTENINGS, fastening), 'Choose Screw or Snap-fit for the PCB corner mount.')
+      next.properties.fastening = fastening
+    }
     if (object.properties.reference !== undefined) {
       demand(CHILD_TYPES[type]?.supportsReference && typeof object.properties.reference === 'boolean',
         'Reference only must be a checkbox value on an object that supports it.')
@@ -325,15 +392,9 @@ function evaluate(project, samplePath) {
       copies += next.parameters.count || 0
       if (copies > 256) mark(path + '.parameters.count', 'Keep the project below 257 repeated copies.')
     }
-    if (type === 'pcb-mount' && next.parameters.length > next.parameters.boardDepth / 2 - 0.5) {
-      mark(path + '.parameters.length', 'Shorten the clips to leave room between each pair.')
-    }
-    if (type === 'pcb-screw-mount') {
-      const { pitchX, pitchY, diameter, height, pilotDiameter, pilotDepth } = next.parameters
-      if (pitchX < diameter + 0.5) mark(path + '.parameters.pitchX', 'Leave at least 0.5 mm between posts along X.')
-      if (pitchY < diameter + 0.5) mark(path + '.parameters.pitchY', 'Leave at least 0.5 mm between posts along Y.')
-      if (diameter < pilotDiameter + 1.2) mark(path + '.parameters.pilotDiameter', 'Leave at least 0.6 mm of material around each pilot hole.')
-      if (pilotDepth > height) mark(path + '.parameters.pilotDepth', 'The pilot hole must stop at or above the bottom of the post.')
+    if (type === 'pcb-corner-mount') {
+      validatePCBMount(next.parameters, next.properties.fastening,
+        (field, message) => mark(path + '.parameters.' + field, message))
     }
     if (root) hasUpper = enclosureLayout(next).hasUpper
     next.features = object.features.map((feature, index) => visitFeature(feature, path + '.features.' + index, next))
@@ -429,14 +490,14 @@ export function parseProject(source) {
       const old = feature?.parameters
       if (feature?.type !== 'cable-duct' || !record(old) || Object.hasOwn(old, 'baseHeight')) continue
       const { baseThickness, lift, baseLength, baseWidth, cableDiameter, x, y, angle } = old
-      const formula = (value) => String(value).trim().replace(/^=\s*/, '')
       const baseHeight = typeof baseThickness === 'number' && typeof lift === 'number'
         ? baseThickness + lift
-        : '(' + formula(baseThickness) + ') + (' + formula(lift) + ')'
+        : formulaTerm(baseThickness) + ' + ' + formulaTerm(lift)
       feature.properties = { fit: 'standard' }
       feature.parameters = { baseLength, baseWidth, baseHeight, cableDiameter, x, y, angle }
     }
   }
+  migratePCBMounts(root)
   const [issue] = evaluateProject(project).issues
   if (issue) throw new Error(issue.message)
   project.name = project.name.trim()

@@ -1,6 +1,6 @@
 import {
   ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES, CUTOUT_PLACEMENTS,
-  CABLE_DUCT_FITS, CABLE_DUCT_PLACEMENT_FIELDS,
+  CABLE_DUCT_FITS, CABLE_DUCT_PLACEMENT_FIELDS, PCB_MOUNT_FASTENINGS,
   SCREW_FIELDS, isScrewParameter, enclosureLayout, featureFields, makePrimitive, parameterFields,
 } from './definitions.js'
 import { MAX_DEPTH, MAX_FEATURES, MAX_OBJECTS, MAX_VARIABLES, addsGeometry, makeChild, makeFeature, newProject, objectAt } from './project.js'
@@ -451,6 +451,10 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     const formulaHint = element('p', 'field-hint leading-hint', 'Formulas can use names defined in ')
     formulaHint.append(element('strong', '', 'Variables'), '.')
     parameterPanel.content.append(formulaHint)
+    if (object.type === 'pcb-corner-mount') {
+      const options = Object.entries(PCB_MOUNT_FASTENINGS).map(([key, { label }]) => [key, label])
+      parameterPanel.content.append(selectField(path + '.properties.fastening', 'Fastening', options, object.properties.fastening))
+    }
     if (object.type === 'repeater') {
       const primitive = object.parameters.primitive
       const primitiveBox = element('div', 'primitive-box')
@@ -467,11 +471,11 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       const schema = Object.fromEntries(Object.entries(parameterFields(object)).filter(([key]) => !isRoot || !Object.hasOwn(SCREW_FIELDS, key)))
       parameterPanel.content.append(fields(schema, object.parameters, path + '.parameters'))
     }
-    if (object.type === 'pcb-mount') {
-      parameterPanel.content.append(element('p', 'field-hint', 'Four clips support the board and grip two opposite edges.'))
-    }
-    if (object.type === 'pcb-screw-mount') {
-      parameterPanel.content.append(element('p', 'field-hint', 'Hole spacing is measured center to center. Placement moves and rotates all four posts together.'))
+    if (object.type === 'pcb-corner-mount') {
+      const hint = object.properties.fastening === 'screw'
+        ? 'Measure insets from the PCB edges to the hole centers. Base height sets the board’s underside.'
+        : 'Tuck the board under the fixed catches first, then press it down into the flexing clips.'
+      parameterPanel.content.append(element('p', 'field-hint', hint))
     }
     selected.append(parameterPanel.details)
     if (object.type === 'screw-fastened') {
@@ -548,6 +552,10 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       const card = key.slice(0, key.lastIndexOf('.properties.'))
       const project = getProject()
       objectAt(project, card).parameters.z ??= project.root.parameters.seam
+    }
+    if (key === path + '.properties.fastening') {
+      const { parameters } = objectAt(getProject(), path)
+      for (const [field, spec] of Object.entries(PCB_MOUNT_FASTENINGS[value].fields)) parameters[field] ??= spec.value
     }
     if (control.tagName === 'SELECT') {
       renderSelected()

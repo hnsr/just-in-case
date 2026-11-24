@@ -1,7 +1,8 @@
 import createManifold from 'manifold-3d'
 import {
   CABLE_DUCT_FLARE, CABLE_DUCT_RAIL, cableDuctProfile,
-  LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, cornerFasteners, enclosureLayout, lidRimWidth, rectangleCorners,
+  PCB_PILOT_MARGIN, pcbSeatSize,
+  LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, cornerFasteners, enclosureLayout, lidRimWidth,
 } from './definitions.js'
 
 const ARC_STEPS = 16
@@ -179,20 +180,6 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     return move(solid, [x, y, (bottom + top) / 2])
   }
 
-  function screwPosts(positions, { diameter, pilotDiameter, pilotDepth }, bottom, top, path) {
-    const posts = Number.isFinite(diameter)
-      ? positions.map((position) => verticalCylinder(position, bottom, top, diameter / 2, path)) : []
-    const pilots = Number.isFinite(pilotDiameter) && Number.isFinite(pilotDepth)
-      ? positions.map((position) => verticalCylinder(position, top - pilotDepth, top + BOOLEAN_OVERLAP, pilotDiameter / 2, path)) : []
-    return { posts, pilots }
-  }
-
-  function pcbScrewMount(parameters, path) {
-    const { pitchX, pitchY, height } = parameters
-    const { posts, pilots } = screwPosts(rectangleCorners(pitchX / 2, pitchY / 2), parameters, -BOOLEAN_OVERLAP, height, path)
-    return subtract(own(Manifold.union(posts)), pilots)
-  }
-
   function screwClosure() {
     const { positions, x, y, bossRadius, collarRadius, recessRadius } = cornerFasteners(p)
     const pads = []
@@ -261,22 +248,72 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     previewGuides.push({ part, outline, paths, mesh: meshBuffers(data) })
   }
 
-  function pressFit({ boardWidth, boardDepth, boardThickness, support, clearance, grip, wall, length }, path) {
-    const catchZ = support + boardThickness + 0.15
-    const outer = clearance + wall
-    const outline = [
-      [-2.4, 0], [outer, 0], [outer, catchZ + 1.5], [clearance + wall * 0.25, catchZ + 1.5],
-      [-grip, catchZ + 0.3], [-grip, catchZ], [clearance, catchZ],
-      [clearance, support], [-2.4, support],
-    ]
-    // Rotate the X/Z clip profile onto the board edge and center it along Y.
-    const profile = trackSource(own(Manifold.extrude([outline], length)), path)
-    const clip = move(rotate(profile, [90, 0, 0]), [boardWidth / 2, length / 2, 0])
-    const y = boardDepth / 4
-    const mirror = rotate(clip, [0, 0, 180])
+  function pcbCornerMount({ parameters, properties: { fastening } }, path) {
+    const { boardWidth, boardDepth, boardThickness, baseHeight, clearance, wallThickness } = parameters
+    const [seatX, seatY] = pcbSeatSize(parameters, fastening)
+    const inside = -clearance
+    const outside = inside - wallThickness
+    const boardTop = baseHeight + boardThickness
+    const snap = fastening === 'snap-fit'
+    const extrude = (outline, bottom, top) => move(
+      trackSource(own(Manifold.extrude([outline], top - bottom)), path), [0, 0, bottom],
+    )
+
+    function corner(flexible) {
+      // X and Y run inward from the nominal board corner.
+      const pad = extrude([[outside, outside], [seatX, outside], [seatX, seatY], [outside, seatY]],
+        -BOOLEAN_OVERLAP, baseHeight)
+      const clipWidth = Math.min(5, seatX * 0.55)
+      const clipStart = seatX - clipWidth - 0.2
+      const slot = 0.6
+      const guideEnd = flexible ? clipStart - slot : seatX
+      const outline = [[outside, outside], [guideEnd, outside], [guideEnd, inside],
+        [inside, inside], [inside, seatY], [outside, seatY]]
+      const walls = extrude(outline, baseHeight - BOOLEAN_OVERLAP, boardTop)
+      if (!snap) {
+        const { holeInsetX: x, holeInsetY: y, pilotDiameter } = parameters
+        const pilot = verticalCylinder({ x, y }, PCB_PILOT_MARGIN, baseHeight + BOOLEAN_OVERLAP, pilotDiameter / 2, path)
+        return subtract(union(pad, [walls]), [pilot])
+      }
+
+      const { clipOverhang } = parameters
+      const anchor = Math.min(0.9, baseHeight / 2)
+      const clipBottom = (flexible ? anchor : baseHeight) - BOOLEAN_OVERLAP
+      // Inset the clip stem and ends slightly from the wall faces it joins.
+      const clipInside = inside - BOOLEAN_OVERLAP
+      const clipOutside = outside + BOOLEAN_OVERLAP
+      const armBack = flexible ? Math.max(clipOutside, clipInside - 1.1) : clipOutside
+      const rootBack = flexible ? Math.max(clipOutside, clipInside - 1.6) : clipOutside
+      // Slope the catch underside for printing and bevel the top to guide the board in.
+      const rampStart = boardTop + 0.15 - Math.min(-clipInside, boardThickness)
+      const reach = clipOverhang - clipInside
+      const catchZ = rampStart + reach
+      const clipTop = catchZ + 0.35 + reach
+      const section = [[rootBack, clipBottom], [clipInside, clipBottom], [clipInside, rampStart],
+        [clipOverhang, catchZ], [clipOverhang, catchZ + 0.35], [clipInside, clipTop], [armBack, clipTop]]
+      if (flexible) section.push([armBack, anchor + 0.6], [rootBack, anchor])
+      const clip = move(rotate(trackSource(own(Manifold.extrude([section], clipWidth)), path), [90, 0, 90]),
+        [clipStart, 0, 0])
+      if (!flexible) return union(pad, [walls, clip])
+
+      // Open the relief to the outer edge. The finger is free above the anchor
+      // and the rest of the seat still supports the underside of the board.
+      const left = clipStart - slot
+      const right = seatX + BOOLEAN_OVERLAP
+      const near = outside - BOOLEAN_OVERLAP
+      const far = inside + slot
+      const relief = extrude([[left, near], [right, near], [right, far], [left, far]], anchor, baseHeight + BOOLEAN_OVERLAP)
+      return union(subtract(pad, [relief]), [walls, clip])
+    }
+
+    const rigid = corner(false)
+    const front = snap ? corner(true) : rigid
+    const back = own(rigid.mirror([0, 1, 0]))
+    const x = boardWidth / 2
+    const y = boardDepth / 2
     return own(Manifold.union([
-      move(clip, [0, y, 0]), move(clip, [0, -y, 0]),
-      move(mirror, [0, y, 0]), move(mirror, [0, -y, 0]),
+      move(front, [-x, -y, 0]), move(own(front.mirror([1, 0, 0])), [x, -y, 0]),
+      move(back, [-x, y, 0]), move(own(back.mirror([1, 0, 0])), [x, y, 0]),
     ]))
   }
 
@@ -391,8 +428,7 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     const place = (solid) => move(rotate(solid, [0, 0, angle]), [x, y, z + surface])
     let solid
     if (object.type === 'repeater') solid = repeat(object.parameters, path)
-    else if (object.type === 'pcb-screw-mount') solid = pcbScrewMount(object.parameters, path)
-    else solid = pressFit(object.parameters, path)
+    else solid = pcbCornerMount(object, path)
     const groups = childGroups(object.children, path, { part, toPart: (child) => toPart(place(child)), reference, cutOwner })
     const assemble = (adds) => place(subtract(union(solid, adds), groups.cuts))
     return { solid: assemble(groups.adds), visible: groups.visibleAdds && assemble(groups.visibleAdds) }
@@ -412,7 +448,7 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
       // Faces contributed by a cutter belong to the object whose material it removes.
       const owner = cutOwner ?? (cutting ? path : undefined)
       objectsByPath.set(key, { object, visiblePath: owner ?? key })
-      const overlap = path === 'root' && object.type !== 'pcb-screw-mount' ? BOOLEAN_OVERLAP : 0
+      const overlap = path === 'root' && object.type === 'repeater' ? BOOLEAN_OVERLAP : 0
       const { solid: result, visible } = childGeometry(object, key, {
         part, surface: surface - overlap, toPart, reference: isReference, cutOwner: owner,
       })
