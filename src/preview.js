@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { createBanana } from './banana.js'
 import { createCutterOutline } from './cutter-outline.js'
+import { createPreviewGrid, gridInterval } from './preview-grid.js'
 
 const initialAngle = new THREE.Vector3(0.96, 0.76, 1.28).normalize()
 // View from +Z for the enclosure's front (its negative Y wall) and +X for its right side.
@@ -188,7 +189,7 @@ function drawAxes(canvas, camera, aligned, colors) {
   context.fill()
 }
 
-export function createPreview(container, axisCanvas) {
+export function createPreview(container, axisCanvas, gridReadout) {
   const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -206,7 +207,6 @@ export function createPreview(container, axisCanvas) {
   controls.enablePan = false
   controls.zoomToCursor = false
   controls.minZoom = 0.35
-  controls.maxZoom = 5
   controls.maxPolarAngle = Math.PI * 0.96
 
   lighting(scene)
@@ -249,10 +249,8 @@ export function createPreview(container, axisCanvas) {
   lid.group.add(overlays.upper)
   scene.add(base.group, lid.group)
 
-  const grid = new THREE.GridHelper(400, 40, 0x5e5650, 0x343239)
+  const grid = createPreviewGrid()
   grid.position.y = -0.25
-  grid.material.transparent = true
-  grid.material.opacity = 0.7
   const shadow = contactShadow()
   scene.add(grid, shadow)
 
@@ -271,12 +269,21 @@ export function createPreview(container, axisCanvas) {
   let mode = 'exploded'
   let frame
   let axisColors = darkAxes
+  let gridStep
 
   function render() {
     frame = undefined
     if (!alignmentView) controls.update()
     const active = alignmentView ? alignmentCamera : camera
-    cutterOutline.update(active, container.clientHeight * active.zoom / (active.top - active.bottom))
+    const pixelsPerMm = container.clientHeight * active.zoom / (active.top - active.bottom)
+    const step = gridInterval(pixelsPerMm)
+    if (step !== gridStep) {
+      gridStep = step
+      grid.material.uniforms.interval.value = step
+      gridReadout.textContent = 'Grid ' + step + ' mm'
+    }
+    gridReadout.hidden = !grid.visible
+    cutterOutline.update(active, pixelsPerMm)
     renderer.render(scene, active)
     drawAxes(axisCanvas, active, alignmentView, axisColors)
   }
@@ -287,7 +294,7 @@ export function createPreview(container, axisCanvas) {
 
   function setLightMode(light) {
     axisColors = light ? lightAxes : darkAxes
-    grid.material.opacity = light ? 0.2 : 0.7
+    grid.material.uniforms.gridOpacity.value = light ? 0.24 : 0.7
     shadow.material.opacity = light ? 0.22 : 1
     base.setLightMode(light)
     lid.setLightMode(light)
@@ -297,7 +304,8 @@ export function createPreview(container, axisCanvas) {
   }
 
   function resize() {
-    const aspect = Math.max(container.clientWidth, 1) / Math.max(container.clientHeight, 1)
+    const height = Math.max(container.clientHeight, 1)
+    const aspect = Math.max(container.clientWidth, 1) / height
     const active = alignmentView ? alignmentCamera : camera
     const widest = Math.hypot(model?.layout.width ?? 100, model?.layout.depth ?? 70)
     const span = alignmentView
@@ -307,6 +315,8 @@ export function createPreview(container, axisCanvas) {
     active.right = span * aspect
     active.top = span
     active.bottom = -span
+    // Even a large enclosure or small viewport can zoom to 10 px per 0.1 mm.
+    controls.maxZoom = Math.max(5, 100 * (2 * span) / height)
     active.updateProjectionMatrix()
     renderer.setSize(container.clientWidth, container.clientHeight, false)
     draw()
@@ -456,8 +466,6 @@ export function createPreview(container, axisCanvas) {
       bananaShadow.position.z = banana.position.z
     }
     aimCamera(width, depth)
-    const gridStep = Math.max(0.5, Math.ceil(Math.max(width, depth) / 120))
-    grid.scale.setScalar(gridStep)
     const front = alignmentView === alignmentViews.front
     const side = alignmentView === alignmentViews.side
     grid.rotation.set(front ? Math.PI / 2 : 0, 0, side ? Math.PI / 2 : 0)

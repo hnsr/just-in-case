@@ -278,7 +278,7 @@ setReady(false)
 if (restoreError) showNotice(restoreError + ' The example is open. Autosave resumes when you open or reset a project.')
 
 try {
-  preview = createPreview($('#scene'), $('#axes'))
+  preview = createPreview($('#scene'), $('#axes'), $('#grid-spacing'))
 } catch {
   previewMessage.textContent = 'The live preview needs WebGL. You can still edit and export this project.'
   for (const control of [...viewButtons, ...orientationButtons, ...document.querySelectorAll('.viewport-tools button'), bananaToggle]) {
