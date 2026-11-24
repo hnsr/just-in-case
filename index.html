@@ -100,11 +100,16 @@
             <button type="button" class="button button-quiet button-small" id="change-enclosure"><span data-icon="swap"></span>Change enclosure</button>
           </div>
           <nav id="object-tree" class="object-tree" aria-label="Object hierarchy"></nav>
-          <div id="child-picker" class="child-picker" popover role="dialog" aria-labelledby="child-picker-title">
+          <div id="child-picker" class="tree-popover" popover role="dialog" aria-labelledby="child-picker-title">
             <p id="child-picker-title">Add child object</p>
             <button type="button" data-child-type="pcb-mount" autofocus><span data-icon="bolt"></span>PCB press-fit mounts</button>
             <button type="button" data-child-type="pcb-screw-mount"><span data-icon="bolt"></span>PCB screw mounts</button>
             <button type="button" data-child-type="repeater"><span data-icon="grid"></span>Geometry</button>
+          </div>
+          <div id="object-actions" class="tree-popover" popover role="dialog" aria-labelledby="object-actions-title">
+            <p id="object-actions-title">Object actions</p>
+            <button type="button" data-object-action="export"><span data-icon="download"></span>Export STL</button>
+            <button type="button" data-object-action="remove"><span data-icon="trash"></span>Remove object</button>
           </div>
           <div id="object-inspector"></div>
           <div class="parameter-footer">

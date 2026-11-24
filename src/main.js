@@ -3,14 +3,14 @@ import '@fontsource-variable/space-grotesk'
 import './styles.css'
 import wasmURL from 'manifold-3d/manifold.wasm?url'
 import { initAppearance } from './appearance.js'
-import { initGeometry, buildEnclosure } from './geometry.js'
+import { initGeometry, buildEnclosure, buildSample } from './geometry.js'
 import { addIcons } from './icons.js'
 import { createInspector } from './inspector.js'
 import { createPreview } from './preview.js'
 import {
-  STORAGE_KEY, LEGACY_STORAGE_KEY, defaultProject, newProject, parseProject, projectJSON, evaluateProject, screwClosureDraftIssues,
+  STORAGE_KEY, LEGACY_STORAGE_KEY, defaultProject, newProject, parseProject, projectJSON, evaluateProject, evaluateSample, screwClosureDraftIssues,
 } from './project.js'
-import { enclosureSTL } from './stl.js'
+import { enclosureSTL, sampleSTL } from './stl.js'
 
 const $ = (selector) => document.querySelector(selector)
 const nameInput = $('#project-name')
@@ -61,13 +61,13 @@ function status(message, state) {
   $('#save-status').dataset.state = state
 }
 
-function notify(message) {
-  toast.innerHTML = '<span data-icon="check"></span><span></span>'
+function notify(message, warning = false) {
+  toast.innerHTML = '<span data-icon="' + (warning ? 'alert' : 'check') + '"></span><span></span>'
   toast.lastElementChild.textContent = message
   addIcons(toast)
   toast.hidden = false
   clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => { toast.hidden = true }, 3200)
+  toastTimer = setTimeout(() => { toast.hidden = true }, warning ? 8000 : 3200)
 }
 
 function setReady(ready) {
@@ -189,7 +189,8 @@ function updateModel() {
     if (model.previewIssues.length) {
       displayModel(model, evaluation.root, objectPaths, screwIssues)
       const placementOnly = model.previewIssues.every(({ field }) => field.endsWith('.placement'))
-      status(placementOnly ? 'Placement needs adjustment' : 'Screw closure needs adjustment', 'error')
+      const ductIssue = model.previewIssues.some(({ field }) => field.startsWith('root.features.'))
+      status(placementOnly ? 'Placement needs adjustment' : ductIssue ? 'Feature needs adjustment' : 'Screw closure needs adjustment', 'error')
       setReady(false)
       return
     }
@@ -235,8 +236,31 @@ function download(contents, name, type) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
+function filenamePart(text, fallback) {
+  return text.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '') || fallback
+}
+
 function projectFilename() {
-  return project.name.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '') || 'enclosure'
+  return filenamePart(project.name, 'enclosure')
+}
+
+function downloadSample(path) {
+  if (!geometry) {
+    notify(loadError ? 'The geometry engine is unavailable.' : 'The geometry engine is still loading.', true)
+    return
+  }
+  try {
+    const selection = evaluateSample(project, path)
+    const sample = buildSample(geometry, selection)
+    const suffix = filenamePart(selection.label, 'part')
+    download(sampleSTL(sample), projectFilename() + '-' + suffix + '-sample.stl', 'model/stl')
+    const warning = sample.floatingPieces > 0
+    notify(warning
+      ? 'STL downloaded. Some pieces sit above the print bed. Check their placement and supports in your slicer.'
+      : selection.label + ' sample STL downloaded', warning)
+  } catch (error) {
+    notify(error.message, true)
+  }
 }
 
 const inspector = createInspector(() => project, () => {
@@ -245,7 +269,7 @@ const inspector = createInspector(() => project, () => {
 }, scheduleUpdate, (object) => {
   selectedObject = object
   preview?.setSelection(modelObjectPaths.get(object))
-}, refreshVisibility)
+}, refreshVisibility, downloadSample)
 
 addIcons(document)
 inspector.reset()

@@ -1,8 +1,9 @@
 import {
   ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES, CUTOUT_PLACEMENTS,
+  CABLE_DUCT_FITS, CABLE_DUCT_PLACEMENT_FIELDS,
   SCREW_FIELDS, isScrewParameter, enclosureLayout, featureFields, makePrimitive, parameterFields,
 } from './definitions.js'
-import { MAX_DEPTH, MAX_FEATURES, MAX_OBJECTS, MAX_VARIABLES, makeChild, makeFeature, newProject, objectAt } from './project.js'
+import { MAX_DEPTH, MAX_FEATURES, MAX_OBJECTS, MAX_VARIABLES, addsGeometry, makeChild, makeFeature, newProject, objectAt } from './project.js'
 import { addIcons } from './icons.js'
 
 const $ = (selector) => document.querySelector(selector)
@@ -131,10 +132,12 @@ function countDescendants(object) {
   return object.children.reduce((total, child) => total + 1 + countDescendants(child), 0)
 }
 
-export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect, onVisibilityChange) {
+export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect, onVisibilityChange, onExportSample) {
   const tree = $('#object-tree')
   const selected = $('#object-inspector')
   const childPicker = $('#child-picker')
+  const objectActions = $('#object-actions')
+  const exportAction = objectActions.querySelector('[data-object-action="export"]')
   const removeDialog = $('#remove-object-dialog')
   const variablesPanel = $('#variables-panel')
   const variablesToggle = $('#variables-toggle')
@@ -144,7 +147,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
   let hiddenObjects = new WeakSet()
   let path = 'root'
   let inheritsReference = false
-  let childTarget
+  let rowTarget
   let pendingRemoval
 
   function disclosure(label, key, { glyph, summary, open = false } = {}) {
@@ -162,31 +165,37 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     return { details, content }
   }
 
-  function positionChildPicker() {
-    if (!childTarget || !childPicker.matches(':popover-open')) return
-    const { top, bottom, right } = childTarget.trigger.getBoundingClientRect()
+  function closeRowPopover() {
+    if (rowTarget?.popover.matches(':popover-open')) rowTarget.popover.hidePopover()
+  }
+
+  function positionRowPopover() {
+    if (!rowTarget?.popover.matches(':popover-open')) return
+    const { trigger, popover } = rowTarget
+    const { top, bottom, right } = trigger.getBoundingClientRect()
     const { clientWidth, clientHeight } = document.documentElement
     if (top >= clientHeight || bottom <= 0) {
-      childPicker.hidePopover()
+      closeRowPopover()
       return
     }
     const gap = 8
-    const maxTop = clientHeight - childPicker.offsetHeight - gap
-    const above = top - childPicker.offsetHeight - gap
-    const left = Math.min(right, clientWidth - gap) - childPicker.offsetWidth
-    childPicker.style.left = Math.max(gap, left) + 'px'
-    childPicker.style.top = Math.max(gap, bottom + gap <= maxTop ? bottom + gap : above >= gap ? above : maxTop) + 'px'
+    const maxTop = clientHeight - popover.offsetHeight - gap
+    const above = top - popover.offsetHeight - gap
+    const left = Math.min(right, clientWidth - gap) - popover.offsetWidth
+    popover.style.left = Math.max(gap, left) + 'px'
+    popover.style.top = Math.max(gap, bottom + gap <= maxTop ? bottom + gap : above >= gap ? above : maxTop) + 'px'
   }
 
-  function openChildPicker(object, key, trigger) {
-    const sameTrigger = childTarget?.trigger === trigger
-    if (childPicker.matches(':popover-open')) childPicker.hidePopover()
+  function openRowPopover(popover, trigger, target) {
+    const sameTrigger = rowTarget?.trigger === trigger
+    closeRowPopover()
     if (sameTrigger) return
-    childTarget = { object, key, trigger }
+    rowTarget = { ...target, trigger, popover }
     trigger.setAttribute('aria-expanded', 'true')
     trigger.focus({ preventScroll: true })
-    childPicker.showPopover({ source: trigger })
-    positionChildPicker()
+    popover.showPopover({ source: trigger })
+    positionRowPopover()
+    popover.querySelector('button:not([hidden])')?.focus({ preventScroll: true })
   }
 
   function requestRemoval(object, key, parent) {
@@ -214,15 +223,16 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
   }
 
   function renderTree(focus = false, selection = objectAt(getProject(), path)) {
-    if (childPicker.matches(':popover-open')) childPicker.hidePopover()
+    closeRowPopover()
     const rootObject = getProject().root
     const limitReached = countDescendants(rootObject) + 1 >= MAX_OBJECTS
 
-    function branch(object, key, depth, parent, parentReference = false, parentHidden = false) {
+    function branch(object, key, depth, parent, parentReference = false, parentHidden = false, parentAdditive = true) {
       const detail = ROOT_TYPES[object.type] ?? CHILD_TYPES[object.type]
       const label = ownLabel(object)
       const reference = parentReference || object.properties.reference === true
       const hidden = parentHidden || hiddenObjects.has(object)
+      const additive = parentAdditive && addsGeometry(object)
       const row = element('div', 'tree-row')
       row.classList.toggle('is-hidden', hidden)
       const choose = button('', detail.icon, 'tree-object', () => {
@@ -261,7 +271,8 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       eye.setAttribute('aria-label', eyeLabel)
       eye.title = eyeLabel
       const actions = element('div', 'tree-actions')
-      const add = button('', 'plus', 'icon-button tree-action', (event) => openChildPicker(object, key, event.currentTarget))
+      const add = button('', 'plus', 'icon-button tree-action', (event) =>
+        openRowPopover(childPicker, event.currentTarget, { object, key }))
       add.setAttribute('aria-label', 'Add child to ' + label)
       add.setAttribute('aria-controls', childPicker.id)
       add.setAttribute('aria-haspopup', 'dialog')
@@ -270,10 +281,17 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       add.title = add.disabled ? 'Object or nesting limit reached' : 'Add child object'
       actions.append(add)
       if (parent) {
-        const remove = button('', 'trash', 'icon-button tree-action tree-remove', () => requestRemoval(object, key, parent))
-        remove.setAttribute('aria-label', 'Remove ' + label)
-        remove.title = 'Remove object'
-        actions.append(remove)
+        const more = button('', 'more', 'icon-button tree-action', (event) => {
+          exportAction.hidden = !additive
+          $('#object-actions-title').textContent = label
+          openRowPopover(objectActions, event.currentTarget, { object, key, parent })
+        })
+        more.setAttribute('aria-label', 'More actions for ' + label)
+        more.setAttribute('aria-controls', objectActions.id)
+        more.setAttribute('aria-haspopup', 'dialog')
+        more.setAttribute('aria-expanded', 'false')
+        more.title = 'More actions'
+        actions.append(more)
       }
       row.append(choose, eye, actions)
 
@@ -282,7 +300,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       if (object.children.length) {
         const children = element('ul')
         object.children.forEach((child, index) => {
-          children.append(branch(child, key + '.children.' + index, depth + 1, object, reference, hidden))
+          children.append(branch(child, key + '.children.' + index, depth + 1, object, reference, hidden, additive))
         })
         item.append(children)
       }
@@ -318,38 +336,65 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
 
   function featureCard(feature, index, enclosureType) {
     const key = path + '.features.' + index
-    const { properties, parameters } = feature
+    const { type, properties, parameters } = feature
+    const duct = type === 'cable-duct'
     const atSeam = properties.placement === 'seam'
-    const title = properties.side + ' wall cutout'
-    const summary = properties.shape + (atSeam ? ' · Seam' : '')
-    const { details, content } = disclosure(title, key, { summary })
+    const title = duct ? FEATURES[type].label : properties.side + ' wall cutout'
+    const summary = duct ? undefined : properties.shape + (atSeam ? ' · Seam' : '')
+    const { details, content } = disclosure(title, key, { summary, glyph: duct ? FEATURES[type].icon : undefined })
     details.classList.add('feature-card')
-    const options = element('div', 'fields feature-options')
-    options.append(
-      selectField(key + '.properties.side', 'Wall', SIDES.map((side) => [side, side]), properties.side),
-      selectField(key + '.properties.shape', 'Shape', SHAPES.map((shape) => [shape, shape]), properties.shape),
-    )
-    content.append(options)
-    if (enclosureType === 'split') {
-      const placement = element('div', 'feature-options')
-      placement.append(selectField(key + '.properties.placement', 'Placement',
-        Object.entries(CUTOUT_PLACEMENTS), properties.placement ?? 'height'))
-      content.append(placement)
+    if (!duct) {
+      const options = element('div', 'fields feature-options')
+      options.append(
+        selectField(key + '.properties.side', 'Wall', SIDES.map((side) => [side, side]), properties.side),
+        selectField(key + '.properties.shape', 'Shape', SHAPES.map((shape) => [shape, shape]), properties.shape),
+      )
+      content.append(options)
+      if (enclosureType === 'split') {
+        const placement = element('div', 'feature-options')
+        placement.append(selectField(key + '.properties.placement', 'Placement',
+          Object.entries(CUTOUT_PLACEMENTS), properties.placement ?? 'height'))
+        content.append(placement)
+      }
     }
     const issue = element('p', 'field-hint feature-issue')
     issue.hidden = true
     issue.setAttribute('role', 'status')
     issue.dataset.featureIssue = key
-    content.append(issue, fields(featureFields(feature), parameters, key + '.parameters'))
+    content.append(issue)
+    const schema = featureFields(feature)
+    if (duct) {
+      const { x, y, angle, ...dimensions } = schema
+      const sizes = fields(dimensions, parameters, key + '.parameters')
+      const fits = Object.entries(CABLE_DUCT_FITS).map(([value, { label }]) => [value, label])
+      sizes.append(selectField(key + '.properties.fit', 'Push-in fit', fits, properties.fit))
+      const center = element('p', 'field-hint')
+      center.dataset.ductCenter = key + '.parameters'
+      center.hidden = true
+      const placement = element('fieldset', 'feature-placement')
+      placement.append(element('legend', 'field-hint', 'Placement'),
+        fields(CABLE_DUCT_PLACEMENT_FIELDS, parameters, key + '.parameters'))
+      content.append(sizes, center, placement)
+    } else {
+      content.append(fields(schema, parameters, key + '.parameters'))
+    }
     if (atSeam) content.append(element('p', 'field-hint', 'Follows the lower half height and opens the lip at this cutout.'))
-    const remove = button('Remove feature', 'trash', 'button button-quiet button-small remove-feature', () => {
+    const actions = element('div', 'feature-actions')
+    const remove = button('Remove feature', 'trash', 'button button-quiet button-small', () => {
       objectAt(getProject(), path).features.splice(index, 1)
       renderSelected()
       $('#object-inspector .add-row button')?.focus()
       onChange()
     })
     remove.setAttribute('aria-label', 'Remove ' + title.toLowerCase() + ' ' + (index + 1))
-    content.append(remove)
+    actions.append(remove)
+    if (duct) {
+      const exportSTL = button('', 'download', 'icon-button', () => onExportSample(key))
+      exportSTL.setAttribute('aria-label', 'Export ' + title.toLowerCase() + ' ' + (index + 1) + ' as STL')
+      exportSTL.title = 'Export sample as STL'
+      actions.append(exportSTL)
+    }
+    content.append(actions)
     return details
   }
 
@@ -558,6 +603,13 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       report.textContent = [...new Set(messages)].join(' ')
       report.hidden = messages.length === 0
     }
+    for (const readout of selected.querySelectorAll('[data-duct-center]')) {
+      const prefix = readout.dataset.ductCenter + '.'
+      const value = (key) => evaluation.values.get(prefix + key)
+      const center = evaluation.values.get('root.parameters.floor') + value('baseHeight') + value('cableDiameter') / 2
+      readout.hidden = !Number.isFinite(center)
+      readout.textContent = readout.hidden ? '' : 'Cable center sits ' + formatter.format(center) + ' mm above the enclosure bottom.'
+    }
     const screwReport = selected.querySelector('[data-screw-issues]')
     if (screwReport) {
       const messages = evaluation.issues.filter(({ field }) => isScrewParameter(field)).map(({ message }) => message)
@@ -572,24 +624,34 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
   }
 
   selected.addEventListener('input', handleInput)
-  childPicker.addEventListener('beforetoggle', (event) => {
-    if (event.newState === 'closed') {
-      childTarget?.trigger.setAttribute('aria-expanded', 'false')
-      childTarget = undefined
-    }
-  })
+  for (const popover of [childPicker, objectActions]) {
+    popover.addEventListener('beforetoggle', (event) => {
+      if (event.newState === 'closed' && rowTarget?.popover === popover) {
+        rowTarget.trigger.setAttribute('aria-expanded', 'false')
+        rowTarget = undefined
+      }
+    })
+  }
   childPicker.addEventListener('click', (event) => {
     const choice = event.target.closest('[data-child-type]')
-    if (!choice || !childTarget) return
-    const { object, key } = childTarget
+    if (!choice || rowTarget?.popover !== childPicker) return
+    const { object, key } = rowTarget
     const child = makeChild(choice.dataset.childType, key === 'root')
     object.children.push(child)
     renderTree(true, child)
     renderSelected()
     onChange()
   })
-  window.addEventListener('scroll', positionChildPicker, { passive: true })
-  window.addEventListener('resize', positionChildPicker)
+  objectActions.addEventListener('click', (event) => {
+    const action = event.target.closest('[data-object-action]')?.dataset.objectAction
+    if (!action || rowTarget?.popover !== objectActions) return
+    const { object, key, parent } = rowTarget
+    closeRowPopover()
+    if (action === 'export') onExportSample(key)
+    else requestRemoval(object, key, parent)
+  })
+  window.addEventListener('scroll', positionRowPopover, { passive: true })
+  window.addEventListener('resize', positionRowPopover)
   removeDialog.addEventListener('close', () => {
     const remove = pendingRemoval
     pendingRemoval = undefined

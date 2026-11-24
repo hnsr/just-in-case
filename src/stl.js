@@ -7,6 +7,14 @@ export function enclosureSTL(model, part) {
     both: [[model.base, -separation], [model.upper, separation]],
   }[part]
   if (!parts || parts.some(([mesh]) => !mesh)) throw new Error('This project does not have the requested parts.')
+  return writeSTL(parts)
+}
+
+export function sampleSTL(sample) {
+  return writeSTL([[sample.mesh, 0]])
+}
+
+function writeSTL(parts) {
   const triangleCount = parts.reduce((sum, [mesh]) => sum + mesh.triangles.length / 3, 0)
   const buffer = new ArrayBuffer(84 + 50 * triangleCount)
   const view = new DataView(buffer)

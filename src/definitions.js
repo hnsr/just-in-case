@@ -92,6 +92,19 @@ export const PRIMITIVES = {
   sphere: { label: 'Sphere', fields: { diameter: mm('Diameter', 5, 0.5, 400) } },
 }
 
+export const CABLE_DUCT_RAIL = 2
+export const CABLE_DUCT_FLARE = 1
+export const CABLE_DUCT_FITS = {
+  easy: { label: 'Easy', interference: 0.02 },
+  standard: { label: 'Standard', interference: 0.04 },
+  snug: { label: 'Snug', interference: 0.08 },
+}
+export const CABLE_DUCT_PLACEMENT_FIELDS = {
+  x: PLACEMENT_FIELDS.x,
+  y: PLACEMENT_FIELDS.y,
+  angle: PLACEMENT_FIELDS.angle,
+}
+
 export const FEATURES = {
   cutout: {
     label: 'Wall cutout', icon: 'scissors',
@@ -102,11 +115,35 @@ export const FEATURES = {
       z: mm('Center from enclosure bottom', 12, 0, 200),
     },
   },
+  'cable-duct': {
+    label: 'Cable duct', icon: 'cable',
+    fields: {
+      baseLength: mm('Base length', 40, 12, 300),
+      baseWidth: mm('Base width', 14, 8, 120),
+      baseHeight: mm('Base height', 2, 1, 200),
+      cableDiameter: mm('Cable diameter', 5, 1.5, 30),
+      ...CABLE_DUCT_PLACEMENT_FIELDS,
+    },
+  },
 }
 
 export const SIDES = ['Front', 'Right', 'Back', 'Left']
 export const SHAPES = ['Rectangle', 'Circle']
 export const CUTOUT_PLACEMENTS = { height: 'At height', seam: 'At split seam' }
+
+export function cableDuctMinimumWidth(diameter) {
+  return diameter + 2 * (CABLE_DUCT_RAIL + CABLE_DUCT_FLARE + 0.1)
+}
+
+export function cableDuctProfile({ baseWidth, cableDiameter }, fit) {
+  const space = baseWidth - 2 * (CABLE_DUCT_RAIL + CABLE_DUCT_FLARE) - cableDiameter
+  const clearance = Math.min(0.3, cableDiameter * 0.06, space / 2)
+  const gripScale = Math.min(cableDiameter, 10)
+  return {
+    ductWidth: cableDiameter + 2 * clearance,
+    gripGap: cableDiameter - gripScale * CABLE_DUCT_FITS[fit].interference,
+  }
+}
 
 export function rectangleCorners(x, y) {
   return [{ x, y }, { x: -x, y }, { x: -x, y: -y }, { x, y: -y }]

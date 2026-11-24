@@ -1,5 +1,6 @@
 import createManifold from 'manifold-3d'
 import {
+  CABLE_DUCT_FLARE, CABLE_DUCT_RAIL, cableDuctProfile,
   LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, cornerFasteners, enclosureLayout, lidRimWidth, rectangleCorners,
 } from './definitions.js'
 
@@ -51,10 +52,18 @@ function hasClosedEdges(vertices, triangles, stride) {
   return [...edges.values()].every((balance) => balance === 0)
 }
 
-export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview = false, screwIssues = [], hiddenPaths } = {}) {
+export function buildEnclosure(engine, root, options) {
+  return buildGeometry(engine, root, options)
+}
+
+export function buildSample(engine, sample) {
+  return buildGeometry(engine, null, { sample })
+}
+
+function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false, screwIssues = [], hiddenPaths, sample } = {}) {
   if (!preview && screwIssues.length) throw new Error(screwIssues[0].message)
-  const p = root.parameters
-  const layout = enclosureLayout(root)
+  const p = root?.parameters
+  const layout = root && enclosureLayout(root)
   const owned = []
   const objectSources = new Map()
   const objectsByPath = new Map()
@@ -271,6 +280,95 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
     ]))
   }
 
+  function cableDuct({ parameters, properties }, floor, overlap = BOOLEAN_OVERLAP) {
+    const { cableDiameter, baseLength, baseWidth, baseHeight, x, y, angle } = parameters
+    const { ductWidth, gripGap } = cableDuctProfile(parameters, properties.fit)
+    const seat = floor + baseHeight
+    const bottom = floor - overlap
+    const halfBase = baseWidth / 2
+    const inner = ductWidth / 2
+    const outer = inner + CABLE_DUCT_RAIL
+    const foot = outer + CABLE_DUCT_FLARE
+    const top = seat + cableDiameter + 0.65
+
+    // Sketch the Y/Z section and extrude it along X. The pedestal and rails are one solid.
+    const alongLength = (profile, length) => move(
+      rotate(own(Manifold.extrude([profile], length)), [90, 0, 90]), [-length / 2, 0, 0],
+    )
+    const body = alongLength([
+      [-halfBase, bottom], [halfBase, bottom], [halfBase, seat], [foot, seat],
+      [outer, seat + CABLE_DUCT_FLARE], [outer, top], [inner, top], [inner, seat],
+      [-inner, seat], [-inner, top], [-outer, top], [-outer, seat + CABLE_DUCT_FLARE],
+      [-foot, seat], [-halfBase, seat],
+    ], baseLength)
+
+    const face = gripGap - inner
+    const anchor = inner + BOOLEAN_OVERLAP
+    const toothBottom = seat - BOOLEAN_OVERLAP
+    const toothLength = 2
+    const overhang = Math.min(0.35, cableDiameter * 0.08)
+    const lipTip = face - overhang
+    const throat = seat + cableDiameter * 0.88
+    // A 45° slope supports the inward lip. Above it, the face opens toward the rail to guide insertion.
+    const tooth = alongLength([
+      [face, toothBottom], [anchor, toothBottom], [anchor, top],
+      [(inner + face) / 2, top], [lipTip, throat], [face, throat - overhang],
+    ], toothLength)
+    // Bevel the two corners of the contact face along the channel.
+    const trimHalfLength = toothLength / 2 + BOOLEAN_OVERLAP
+    const footprint = [[-trimHalfLength, anchor + BOOLEAN_OVERLAP], [-trimHalfLength, inner], [-0.65, lipTip - BOOLEAN_OVERLAP],
+      [0.65, lipTip - BOOLEAN_OVERLAP], [trimHalfLength, inner], [trimHalfLength, anchor + BOOLEAN_OVERLAP]]
+    const trimHeight = top - toothBottom + 2 * BOOLEAN_OVERLAP
+    const trim = move(own(Manifold.extrude([footprint], trimHeight)), [0, 0, toothBottom - BOOLEAN_OVERLAP])
+    const rightTooth = own(tooth.intersect(trim))
+    const leftTooth = rotate(rightTooth, [0, 0, 180])
+    // Keep each end flush with a tooth and alternate sides at about 3.2 mm pitch.
+    const toothSpan = baseLength - toothLength
+    const toothCount = 2 * Math.round(baseLength / (2 * 3.2))
+    const pitch = toothSpan / (toothCount - 1)
+    const teeth = Array.from({ length: toothCount }, (_, i) => {
+      const center = -toothSpan / 2 + i * pitch
+      return move(i % 2 === 0 ? rightTooth : leftTooth, [center, 0, 0])
+    })
+
+    return move(rotate(union(body, teeth), [0, 0, angle]), [x, y, 0])
+  }
+
+  function addCableDucts(base, assembledLid, fasteners = []) {
+    if (!root.features.some(({ type }) => type === 'cable-duct')) return
+    const ceiling = layout.height - (layout.hasUpper ? p.thickness : 0)
+    const start = p.floor - 2 * BOOLEAN_OVERLAP
+    const cavity = prism(p.wall, ceiling - start + BOOLEAN_OVERLAP, start)
+    const placed = []
+    root.features.forEach((feature, index) => {
+      if (feature.type !== 'cable-duct') return
+      const duct = cableDuct(feature, p.floor)
+      const { min, max } = duct.boundingBox()
+      const issue = (key, detail) => {
+        const message = 'Cable duct ' + (index + 1) + ' ' + detail
+        if (!preview) throw new Error(message)
+        previewIssues.push({ field: 'root.features.' + index + '.parameters.' + key, message })
+        addGuide(duct, 'base')
+      }
+      if (max[2] > ceiling + 0.001) {
+        issue('baseHeight', 'extends above the interior. Reduce the base height or increase the enclosure height.')
+      } else if (subtract(duct, [cavity]).volume() > 0.005) {
+        const crossesY = Math.max(-min[1], max[1]) > p.depth / 2 - p.wall
+        issue(crossesY ? 'y' : 'x', 'overlaps the inside wall. Adjust its X or Y offset, rotation, or base size.')
+      } else if (assembledLid && overlaps(duct, [assembledLid])) {
+        issue('baseHeight', 'overlaps the assembled ' + layout.upperLabel.toLowerCase() + '. Reduce the base height or move it inward.')
+      } else if (overlaps(duct, fasteners)) {
+        issue('x', 'overlaps a corner fastener. Move the duct away from the corner.')
+      } else if (overlaps(duct, placed)) {
+        issue('x', 'overlaps another cable duct. Move the ducts apart.')
+      } else {
+        placed.push(duct)
+        base.adds.push(duct)
+        base.visibleAdds?.push(duct)
+      }
+    })
+  }
+
   function repeat({ primitive, count, stepX, stepY, stepZ, turnX, turnY, turnZ }, path) {
     const { width, depth, height, diameter } = primitive.parameters
     let seed
@@ -288,7 +386,7 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
     return own(Manifold.union(copies))
   }
 
-  function childGeometry(object, path, { part, surface, toPart, reference, cutOwner }) {
+  function childGeometry(object, path, { part, surface, toPart = (solid) => solid, reference, cutOwner }) {
     const { x, y, z, angle } = object.placement
     const place = (solid) => move(rotate(solid, [0, 0, angle]), [x, y, z + surface])
     let solid
@@ -342,7 +440,7 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
         }
         return
       }
-      if (cutting && !result.isEmpty()) {
+      if (!sample && cutting && !result.isEmpty()) {
         // Capture the full cutter in its part's coordinates before the parent subtracts it.
         const { vertProperties, triVerts, numProp, mergeFromVert, mergeToVert } = toPart(result).getMesh()
         const triangles = new Uint32Array(triVerts)
@@ -476,13 +574,31 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
   const flipUpper = (solid) => move(rotate(solid, [180, 0, 0]), [0, 0, layout.height])
 
   try {
+    if (sample) {
+      let solid
+      if (sample.feature) {
+        solid = cableDuct(sample.feature, 0, 0)
+      } else {
+        const { solid: branch } = childGeometry(sample.object, 'sample', { surface: 0 })
+        solid = rotate(branch, [0, 0, sample.ancestorAngle])
+      }
+      if (solid.status() !== 'NoError' || solid.isEmpty()) throw new Error('The sample has no usable solid geometry.')
+      const { min, max } = solid.boundingBox()
+      const floatingPieces = solid.decompose().map(own)
+        .filter((piece) => piece.boundingBox().min[2] > min[2] + 0.001 && piece.volume() > 0).length
+      const onBed = move(solid, [-(min[0] + max[0]) / 2, -(min[1] + max[1]) / 2, -min[2]])
+      return { mesh: mesh(onBed, 'sample'), floatingPieces }
+    }
+
     const cutoutFeatures = root.features.filter(({ type }) => type === 'cutout')
     const openings = cutoutFeatures.map((feature) => opening(feature))
     let cornerPads = []
+    let fasteners = []
     const baseChildren = childGroups(root.children, 'root', {
       part: 'base', surface: p.floor, availableHeight: layout.height - (layout.hasUpper ? p.thickness : 0),
     })
     if (!layout.hasUpper) {
+      addCableDucts(baseChildren)
       const { solid, visible } = completePart(tray(layout.baseHeight, p.floor), baseChildren, 'base', openings)
       const visibleParts = visible ? { base: mesh(visible) } : undefined
       return { base: mesh(solid, layout.baseLabel), upper: null, visibleParts, layout, cutters, references, previewIssues, previewGuides }
@@ -534,6 +650,7 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
         for (const hole of lidHoles) addGuide(hole, 'upper', true)
       } else {
         cornerPads = pads
+        fasteners = screwSolids
         baseChildren.adds.push(...collars)
         baseChildren.visibleAdds?.push(...collars)
         baseChildren.cuts.push(...pilots)
@@ -541,11 +658,13 @@ export function buildEnclosure({ CrossSection, Manifold, Mesh }, root, { preview
       }
     }
     if (root.type === 'split') upperChildren.cuts.push(...openings.map(flipUpper))
-    const base = completePart(tray(layout.baseHeight, p.floor, cornerPads), baseChildren, 'base', openings)
     const lid = completePart(upper, upperChildren, 'upper')
+    const assembledLid = flipUpper(lid.solid)
+    addCableDucts(baseChildren, assembledLid, fasteners)
+    const base = completePart(tray(layout.baseHeight, p.floor, cornerPads), baseChildren, 'base', openings)
     const baseMesh = mesh(base.solid, layout.baseLabel)
     const upperMesh = mesh(lid.solid, layout.upperLabel)
-    if (own(base.solid.intersect(flipUpper(lid.solid))).volume() > 0.005) {
+    if (own(base.solid.intersect(assembledLid)).volume() > 0.005) {
       const hint = p.lip ? 'Check the lip dimensions and any objects near the mating edge.' : 'Check any objects near the mating edge.'
       throw new Error('The parts intersect when assembled. ' + hint)
     }

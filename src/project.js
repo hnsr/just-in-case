@@ -1,6 +1,7 @@
 import { evaluateFormula, VARIABLE_NAME } from './formula.js'
 import {
   ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES,
+  CABLE_DUCT_FITS, cableDuctMinimumWidth,
   LOCATOR_RECESS_DEPTH, cornerFasteners, isScrewParameter, enclosureLayout, featureFields, fieldDefaults, lidRimWidth,
   makePrimitive, parameterFields,
 } from './definitions.js'
@@ -11,6 +12,10 @@ export const MAX_VARIABLES = 32
 export const MAX_FEATURES = 24
 export const MAX_OBJECTS = 40
 export const MAX_DEPTH = 6
+
+export function addsGeometry(object) {
+  return object.properties.reference !== true && object.properties.operation !== 'cut'
+}
 
 export function newProject(type = 'lidded', includeLid = true) {
   const root = { type, properties: type === 'lidded' ? { includeLid } : {}, parameters: {}, features: [], children: [] }
@@ -37,9 +42,25 @@ export function makeChild(type, direct = true) {
 
 export function makeFeature(type, root) {
   const feature = { type, properties: {}, parameters: fieldDefaults(FEATURES[type].fields) }
+  const p = root.parameters
+  if (type === 'cable-duct') {
+    feature.properties.fit = 'standard'
+    const f = feature.parameters
+    const alongY = p.depth > p.width
+    const edge = Math.max(p.wall, p.radius) + 0.5
+    const [span, across, offset] = alongY ? [p.depth, p.width, 'x'] : [p.width, p.depth, 'y']
+    f.angle = alongY ? 90 : 0
+    f.baseLength = Math.max(FEATURES[type].fields.baseLength.min, Math.min(f.baseLength, span - 2 * edge))
+    const ducts = root.features.filter((item) => item.type === type)
+    const spacing = f.baseWidth + 1
+    const lanes = Math.max(0, Math.floor((across / 2 - edge - f.baseWidth / 2) / spacing))
+    const candidates = [0, ...Array.from({ length: lanes }, (_, i) => [spacing * (i + 1), -spacing * (i + 1)]).flat()]
+    f[offset] = candidates.find((value) => ducts.every(({ parameters }) =>
+      Math.abs(value - parameters[offset]) >= (f.baseWidth + parameters.baseWidth) / 2 + 0.5)) ?? 0
+    return feature
+  }
   if (type !== 'cutout') return feature
 
-  const p = root.parameters
   const { height, hasUpper } = enclosureLayout(root)
   const top = hasUpper ? p.thickness : 0
   const edge = Math.max(p.wall, p.radius) + 1
@@ -133,6 +154,14 @@ export function screwClosureDraftIssues(root, issues) {
   return root?.type === 'screw-fastened' && issues.every(({ field }) => isScrewParameter(field)) ? issues : []
 }
 
+function validateCableDuct(f, issue) {
+  const minimumWidth = cableDuctMinimumWidth(f.cableDiameter)
+  if (f.baseWidth < minimumWidth - 1e-8) {
+    const width = Math.ceil((minimumWidth - 1e-8) * 100) / 100
+    issue('baseWidth', 'needs a base at least ' + width + ' mm wide for this cable and its rails.')
+  }
+}
+
 function validateRoot(root, mark) {
   const p = root.parameters
   const { baseHeight, upperHeight, height, hasUpper } = enclosureLayout(root)
@@ -155,6 +184,10 @@ function validateRoot(root, mark) {
     const f = feature.parameters
     const label = FEATURES[feature.type].label + ' ' + (index + 1)
     const issue = (key, message) => mark('root.features.' + index + '.parameters.' + key, label + ' ' + message)
+    if (feature.type === 'cable-duct') {
+      validateCableDuct(f, issue)
+      return
+    }
     const wallLength = ['Front', 'Back'].includes(feature.properties.side) ? p.width : p.depth
     const openingHeight = feature.properties.shape === 'Circle' ? f.width : f.height
     if (Math.abs(f.offset) + f.width / 2 > wallLength / 2 - Math.max(p.radius, p.wall) - 1) {
@@ -173,19 +206,32 @@ function validateRoot(root, mark) {
 }
 
 export function evaluateProject(project) {
+  return evaluate(project)
+}
+
+export function evaluateSample(project, path) {
+  demand(typeof path === 'string', 'Choose a feature or object to export a sample.')
+  const { sample, issues } = evaluate(project, path)
+  if (issues.length) throw new Error(issues[0].message)
+  return sample
+}
+
+function evaluate(project, samplePath) {
   const issues = []
   const values = new Map()
   const mark = (field, message) => issues.push({ field, message })
   const nameValid = (name) => typeof name === 'string' && Boolean(name.trim()) && name.length <= 80
-  if (!nameValid(project.name)) mark('name', 'Enter a project name of 1 to 80 characters.')
+  if (samplePath === undefined && !nameValid(project.name)) mark('name', 'Enter a project name of 1 to 80 characters.')
 
   const variables = new Map()
+  const duplicates = new Set()
   const resolvedVariables = new Map()
   const chain = new Set()
   let objectCount = 0
   let copies = 0
 
   function variable(name) {
+    if (samplePath !== undefined && duplicates.has(name)) throw new Error('Variable “' + name + '” is already defined.')
     if (resolvedVariables.has(name)) return resolvedVariables.get(name)
     if (!variables.has(name)) throw new Error('Unknown variable “' + name + '”.')
     if (chain.has(name)) throw new Error('Circular reference involving “' + name + '”.')
@@ -218,7 +264,13 @@ export function evaluateProject(project) {
 
   function visitFeature(feature, path, root) {
     demand(feature?.type !== 'screw-closure', 'Screw closure is now built into the Screw-fastened enclosure type.')
-    demand(record(feature) && feature.type === 'cutout' && record(feature.properties), 'This project contains an unknown feature.')
+    demand(record(feature) && Object.hasOwn(FEATURES, feature.type) && record(feature.properties), 'This project contains an unknown feature.')
+    if (feature.type === 'cable-duct') {
+      const { fit } = feature.properties
+      if (!Object.hasOwn(CABLE_DUCT_FITS, fit)) mark(path + '.properties.fit', 'Choose a push-in fit for the cable duct.')
+      const parameters = fields(feature.parameters, featureFields(feature), path + '.parameters')
+      return { type: feature.type, properties: { fit }, parameters }
+    }
     const { side, shape, placement = 'height' } = feature.properties
     demand(SIDES.includes(side) && SHAPES.includes(shape), 'A wall cutout is missing its wall or shape.')
     demand(placement === 'height' || (placement === 'seam' && root.type === 'split'),
@@ -285,8 +337,40 @@ export function evaluateProject(project) {
     }
     if (root) hasUpper = enclosureLayout(next).hasUpper
     next.features = object.features.map((feature, index) => visitFeature(feature, path + '.features.' + index, next))
-    next.children = object.children.map((child, index) => visit(child, path + '.children.' + index, depth + 1, hasUpper))
+    next.children = object.children.flatMap((child, index) => {
+      if (samplePath !== undefined && child?.properties?.reference === true) return []
+      return [visit(child, path + '.children.' + index, depth + 1, hasUpper)]
+    })
     return next
+  }
+
+  function prepareSample(path) {
+    if (/^root\.features\.\d+$/.test(path)) {
+      const raw = objectAt(project, path)
+      demand(raw?.type === 'cable-duct', 'Choose a feature that adds geometry to export a sample.')
+      const feature = visitFeature(raw, path, project.root)
+      const label = FEATURES[feature.type].label
+      validateCableDuct(feature.parameters, (key, message) => mark(path + '.parameters.' + key, label + ' ' + message))
+      return { feature, label }
+    }
+
+    demand(/^root(?:\.children\.\d+)+$/.test(path), 'Choose a non-root object to export a sample.')
+    const indices = path.split('.children.').slice(1)
+    demand(indices.length <= MAX_DEPTH, 'The object hierarchy is too deep.')
+    let ancestorPath = 'root'
+    let object = project.root
+    let ancestorAngle = 0
+    indices.forEach((index, i) => {
+      ancestorPath += '.children.' + index
+      object = object.children?.[index]
+      demand(record(object) && record(object.properties) && addsGeometry(object),
+        'Choose an object in a branch that adds material.')
+      if (i < indices.length - 1) {
+        ancestorAngle += fields(object.placement, { angle: PLACEMENT_FIELDS.angle }, ancestorPath + '.placement').angle
+      }
+    })
+    const resolved = visit(object, path, indices.length, true)
+    return { object: resolved, ancestorAngle, label: resolved.name?.trim() || CHILD_TYPES[resolved.type].label }
   }
 
   try {
@@ -296,11 +380,17 @@ export function evaluateProject(project) {
       if (typeof entry.name !== 'string' || entry.name.length > 40 || !VARIABLE_NAME.test(entry.name)) {
         mark('variables.' + index + '.name', 'Use a variable name that starts with a letter or underscore, followed by letters, digits, or underscores.')
       } else if (variables.has(entry.name)) {
+        duplicates.add(entry.name)
         mark('variables.' + index + '.name', 'Variable “' + entry.name + '” is already defined.')
       } else {
         variables.set(entry.name, entry.value)
       }
     })
+    if (samplePath !== undefined) {
+      // Sample formulas resolve only the variables the sample uses.
+      issues.length = 0
+      return { sample: prepareSample(samplePath), issues }
+    }
     project.variables.forEach(({ name }, index) => {
       if (!variables.has(name)) return
       try {
@@ -335,6 +425,17 @@ export function parseProject(source) {
       root.children.push(legacyScrewMount(root.parameters, feature.parameters))
       return false
     })
+    for (const feature of root.features) {
+      const old = feature?.parameters
+      if (feature?.type !== 'cable-duct' || !record(old) || Object.hasOwn(old, 'baseHeight')) continue
+      const { baseThickness, lift, baseLength, baseWidth, cableDiameter, x, y, angle } = old
+      const formula = (value) => String(value).trim().replace(/^=\s*/, '')
+      const baseHeight = typeof baseThickness === 'number' && typeof lift === 'number'
+        ? baseThickness + lift
+        : '(' + formula(baseThickness) + ') + (' + formula(lift) + ')'
+      feature.properties = { fit: 'standard' }
+      feature.parameters = { baseLength, baseWidth, baseHeight, cableDiameter, x, y, angle }
+    }
   }
   const [issue] = evaluateProject(project).issues
   if (issue) throw new Error(issue.message)

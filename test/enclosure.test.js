@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import * as THREE from 'three'
 import { createCutterOutline } from '../src/cutter-outline.js'
-import { buildEnclosure, initGeometry } from '../src/geometry.js'
-import { defaultProject, evaluateProject, makeChild, newProject, parseProject, projectJSON, screwClosureDraftIssues } from '../src/project.js'
+import { buildEnclosure, buildSample, initGeometry } from '../src/geometry.js'
+import { defaultProject, evaluateProject, evaluateSample, makeChild, makeFeature, newProject, parseProject, projectJSON, screwClosureDraftIssues } from '../src/project.js'
 import { LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, cornerFasteners, makePrimitive } from '../src/definitions.js'
-import { enclosureSTL } from '../src/stl.js'
+import { enclosureSTL, sampleSTL } from '../src/stl.js'
 
 const geometry = await initGeometry()
 
@@ -108,6 +108,206 @@ test('ports on all four walls remove material and screw posts add it', () => {
   project.root.children.push(makeChild('pcb-screw-mount'))
   assert(baseVolume() > portsOnly)
   assert.deepEqual(inspectSTL(enclosureSTL(build(project), 'upper')).max, [50, 35, 2.4])
+})
+
+test('a raised cable duct prints with staggered teeth from end to end and from seat to rim', () => {
+  const project = newProject()
+  const duct = makeFeature('cable-duct', project.root)
+  duct.parameters.baseHeight = 10
+  project.root.features.push(duct)
+  const model = build(parseProject(projectJSON(project)))
+  const surface = raycastSurface(model.base)
+  const seat = project.root.parameters.floor + duct.parameters.baseHeight
+  const firstHit = (start, direction) => new THREE.Raycaster(new THREE.Vector3(...start), new THREE.Vector3(...direction))
+    .intersectObject(surface)[0].point
+  const closeTo = (actual, expected) => assert(Math.abs(actual - expected) < 0.001, actual + ' is not close to ' + expected)
+
+  closeTo(firstHit([-4, 0, project.root.parameters.floor + 0.1], [0, 0, 1]).z, seat)
+  closeTo(firstHit([-4, 0, seat + 12], [0, 0, -1]).z, seat)
+  for (let i = 0; i < 12; i++) {
+    const x = -19 + 38 * i / 11
+    const side = i % 2 === 0 ? 1 : -1
+    closeTo(firstHit([x, 0, seat + 0.01], [0, side, 0]).y, side * 2)
+    closeTo(firstHit([x, 0, seat + 4.4], [0, side, 0]).y, side * 1.65)
+    closeTo(firstHit([x, 0, seat + 4.4], [0, -side, 0]).y, -side * 2.8)
+    closeTo(firstHit([x, side * 2.6, seat + 12], [0, 0, -1]).z, seat + 5.65)
+  }
+  closeTo(firstHit([-19, 0, seat + 4.2], [0, 1, 0]).y, 1.85)
+  closeTo(firstHit([-19, 0, seat + 5.4], [0, 1, 0]).y, 2.25)
+  for (const side of [1, -1]) {
+    const endBevel = firstHit([-side * 19.99, 0, seat + 4.4], [0, side, 0]).y * side
+    assert(endBevel > 1.65 && endBevel < 2.8, 'the end tooth reaches the duct end and has a beveled corner')
+    closeTo(firstHit([-side * 17.8, 0, seat + 4.4], [0, side, 0]).y, side * 2.8)
+  }
+  closeTo(firstHit([-24, 0, seat + 2.5], [1, 0, 0]).x, 47.6)
+  inspectSTL(enclosureSTL(model, 'both'))
+  surface.geometry.dispose()
+  surface.material.dispose()
+})
+
+test('cable ducts are repeatable floor features with independent placement and fit settings', () => {
+  const project = newProject('screw-fastened')
+  const first = makeFeature('cable-duct', project.root)
+  project.root.features.push(first)
+  const second = makeFeature('cable-duct', project.root)
+  assert.notEqual(first.parameters.y, second.parameters.y)
+  project.root.features.push(second)
+  project.variables.push({ name: 'cable', value: 6 }, { name: 'exitHeight', value: 15 })
+  Object.assign(second.parameters, { x: 30, y: 8, angle: 90, cableDiameter: 'cable', baseHeight: 'exitHeight - 2.4 - cable / 2' })
+  second.properties.fit = 'snug'
+  const checked = evaluateProject(project)
+  assert.deepEqual(checked.issues, [])
+  assert.equal(checked.root.features[1].parameters.baseHeight, 9.6)
+  assert.equal(checked.root.features[1].properties.fit, 'snug')
+  const { base } = build(project)
+  assert(hasVertex(base, 37, 28, 12), 'the second seat is rotated and lifted to the prescribed cable center')
+  second.parameters.baseWidth = 12
+  assert(evaluateProject(project).issues.some(({ field }) => field.endsWith('.baseWidth')))
+  second.parameters.baseWidth = 14
+  const child = makeChild('repeater')
+  child.features.push(makeFeature('cable-duct', project.root))
+  project.root.children.push(child)
+  assert(evaluateProject(project).issues.some(({ message }) => /unsupported features/.test(message)))
+})
+
+test('a cable duct follows invalid base height and placement as a draft and clears the warning when moved', () => {
+  const project = newProject('split')
+  const duct = makeFeature('cable-duct', project.root)
+  project.root.features.push(duct)
+  const draft = () => buildEnclosure(geometry, evaluateProject(project).root, { preview: true })
+  duct.parameters.baseHeight = 42
+  let model = draft()
+  assert.equal(model.previewIssues[0].field, 'root.features.0.parameters.baseHeight')
+  assert.match(model.previewIssues[0].message, /above the interior/)
+  assert(model.previewGuides.some(({ part, mesh }) => part === 'base' && hasVertex(mesh, 20, 7, 44.4)))
+  assert.throws(() => enclosureSTL(model, 'base'), /above the interior/)
+  assert.throws(() => build(project), /above the interior/)
+
+  Object.assign(duct.parameters, { baseHeight: 14, y: 24 })
+  model = draft()
+  assert.match(model.previewIssues[0].message, /overlaps the assembled upper half/)
+  duct.parameters.y = 33
+  assert.match(draft().previewIssues[0].message, /overlaps the inside wall/)
+  duct.parameters.y = 0
+  model = draft()
+  assert.deepEqual(model.previewIssues, [])
+  assert.deepEqual(model.previewGuides, [])
+  assert(model.base.height > project.root.parameters.seam)
+  inspectSTL(enclosureSTL(model, 'both'))
+})
+
+test('a branch sample retains nested cuts and print orientation while unrelated settings are invalid', () => {
+  const project = newProject()
+  project.root.parameters.width = 'unknownWidth'
+  project.variables.push({ name: 'width', value: 12 }, { name: 'unused', value: '1 / 0' })
+  const parent = makeChild('repeater')
+  Object.assign(parent.placement, { part: 'upper', angle: 90 })
+  parent.parameters.primitive.parameters.height = 'unrelated'
+  project.root.children.push(parent)
+  const target = makeChild('repeater', false)
+  Object.assign(target.placement, { x: 12, y: -4, z: 4 })
+  Object.assign(target.parameters.primitive.parameters, { width: 'width', depth: 8, height: 3 })
+  parent.children.push(target)
+  const hole = makeChild('repeater', false)
+  hole.properties.operation = 'cut'
+  hole.placement.z = -1
+  Object.assign(hole.parameters.primitive.parameters, { width: 2, depth: 4, height: 5 })
+  const bump = makeChild('repeater', false)
+  Object.assign(bump.placement, { x: 4, z: 2.5 })
+  Object.assign(bump.parameters.primitive.parameters, { width: 2, depth: 2, height: 2 })
+  const reference = makeChild('repeater', false)
+  reference.properties.reference = true
+  reference.parameters.primitive.parameters.height = 'unknownReferenceHeight'
+  target.children.push(hole, bump, reference)
+
+  const path = 'root.children.0.children.0'
+  const sample = buildSample(geometry, evaluateSample(project, path))
+  const stl = inspectSTL(sampleSTL(sample))
+  assert.deepEqual(stl.min, [-4, -6, 0])
+  assert.deepEqual(stl.max, [4, 6, 4.5])
+  assert(Math.abs(stl.volume - (12 * 8 * 3 - 2 * 4 * 3 + 2 * 2 * 1.5)) < 0.001)
+  assert.equal(sample.floatingPieces, 0)
+  assert.throws(() => evaluateSample(project, path + '.children.0'), /adds material/)
+  assert.throws(() => evaluateSample(project, path + '.children.2'), /adds material/)
+
+  parent.properties.operation = 'cut'
+  assert.throws(() => evaluateSample(project, path), /adds material/)
+  parent.properties.operation = 'add'
+  hole.parameters.primitive.parameters.height = 'unknownHoleHeight'
+  assert.throws(() => evaluateSample(project, path), /Unknown variable/)
+})
+
+test('samples flag raised separate pieces and keep independent pieces that already touch the bed', () => {
+  const project = newProject()
+  const pattern = makeChild('repeater')
+  Object.assign(pattern.parameters, { count: 3, stepX: 8, stepZ: 2 })
+  project.root.children.push(pattern)
+  const sample = () => buildSample(geometry, evaluateSample(project, 'root.children.0'))
+  assert.equal(sample().floatingPieces, 2)
+  assert.deepEqual(inspectSTL(sampleSTL(sample())).min, [-10.5, -2.5, 0])
+  pattern.parameters.stepZ = 0
+  assert.equal(sample().floatingPieces, 0)
+  assert(Math.abs(inspectSTL(sampleSTL(sample())).volume - 375) < 0.001)
+})
+
+test('a cable duct sample keeps its full pedestal and skips enclosure clearance checks', () => {
+  const project = newProject('split')
+  project.root.parameters.floor = 'missingFloor'
+  const duct = makeFeature('cable-duct', project.root)
+  Object.assign(duct.parameters, { x: 70, angle: 90, baseHeight: 20 })
+  project.root.features.push(duct, cutout('Right', 'Circle', 6, 6, 0, 12))
+  const path = 'root.features.0'
+  const sample = buildSample(geometry, evaluateSample(project, path))
+  const stl = inspectSTL(sampleSTL(sample))
+  assert.deepEqual(stl.min, [-7, -20, 0])
+  assert.deepEqual(stl.max, [7, 20, 25.65])
+  assert.equal(sample.floatingPieces, 0)
+  assert.throws(() => evaluateSample(project, 'root.features.1'), /adds geometry/)
+  duct.parameters.baseWidth = 10
+  assert.throws(() => evaluateSample(project, path), /base at least 11.2 mm wide/)
+})
+
+test('cable duct fit presets adjust the sample grip and the opening under the lip', () => {
+  const project = newProject()
+  const duct = makeFeature('cable-duct', project.root)
+  project.root.features.push(duct)
+  const direction = new THREE.Vector3(0, 1, 0)
+  for (const [fit, gap] of [['easy', 4.9], ['standard', 4.8], ['snug', 4.6]]) {
+    duct.properties.fit = fit
+    const sample = buildSample(geometry, evaluateSample(project, 'root.features.0'))
+    const surface = raycastSurface(sample.mesh)
+    const hitY = (x, z) => new THREE.Raycaster(new THREE.Vector3(x, 0, z), direction).intersectObject(surface)[0].point.y
+    const seat = duct.parameters.baseHeight
+    assert(Math.abs(hitY(-19, seat + 2.5) + 2.8 - gap) < 0.001)
+    assert(Math.abs(hitY(-19, seat + 4.4) + 2.8 - (gap - 0.35)) < 0.001)
+    assert.equal(sample.floatingPieces, 0)
+    assert.deepEqual(inspectSTL(sampleSTL(sample)).max, [20, 7, 7.65])
+    surface.geometry.dispose()
+    surface.material.dispose()
+  }
+})
+
+test('older cable ducts preserve the cable seat and placement when opened', () => {
+  const project = newProject()
+  project.variables.push({ name: 'pedestal', value: 2 }, { name: 'liftHeight', value: 7.1 })
+  project.root.features.push({
+    type: 'cable-duct',
+    properties: {},
+    parameters: {
+      baseLength: 40, baseWidth: 14, baseThickness: '= pedestal', lift: 'liftHeight',
+      cableDiameter: 5, ductWidth: 6.2, snapGap: 4.7, lateralOffset: 0.35, minimumBendRadius: 15,
+      x: 1, y: -3, angle: 90,
+    },
+  })
+  const migrated = parseProject(projectJSON(project))
+  const [duct] = migrated.root.features
+  assert.deepEqual(duct.properties, { fit: 'standard' })
+  assert.deepEqual(duct.parameters, {
+    baseLength: 40, baseWidth: 14, baseHeight: '(pedestal) + (liftHeight)', cableDiameter: 5,
+    x: 1, y: -3, angle: 90,
+  })
+  assert.equal(evaluateProject(migrated).root.features[0].parameters.baseHeight, 9.1)
+  assert.deepEqual(parseProject(projectJSON(migrated)), migrated)
 })
 
 test('legacy screw posts open as a positioned PCB screw mount', () => {
