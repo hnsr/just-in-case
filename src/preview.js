@@ -189,20 +189,21 @@ function drawAxes(canvas, camera, aligned, colors) {
   context.fill()
 }
 
-export function createPreview(container, axisCanvas, gridReadout) {
+export function createPreview(container, axisCanvas, gridReadout, panHint) {
   const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = 1.03
-  renderer.domElement.tabIndex = 0
-  renderer.domElement.setAttribute('aria-label', 'Enclosure preview. Use arrow keys to orbit, and plus or minus to zoom.')
-  container.append(renderer.domElement)
+  const canvas = renderer.domElement
+  canvas.tabIndex = 0
+  canvas.setAttribute('aria-label', 'Enclosure preview. Use arrow keys to orbit, and plus or minus to zoom.')
+  container.append(canvas)
 
   const scene = new THREE.Scene()
   const camera = new THREE.OrthographicCamera(-100, 100, 100, -100, 0.1, 8000)
   const alignmentCamera = camera.clone()
   camera.position.copy(initialAngle).multiplyScalar(700)
-  const controls = new OrbitControls(camera, renderer.domElement)
+  const controls = new OrbitControls(camera, canvas)
   controls.enableDamping = true
   controls.enablePan = false
   controls.zoomToCursor = false
@@ -266,6 +267,9 @@ export function createPreview(container, axisCanvas, gridReadout) {
   let cameraDistance = 700
   let alignmentView
   const alignmentSize = new THREE.Vector2(100, 70)
+  const alignmentHome = new THREE.Vector3()
+  const panOffset = new THREE.Vector2()
+  let panDrag
   let mode = 'exploded'
   let frame
   let axisColors = darkAxes
@@ -425,10 +429,12 @@ export function createPreview(container, axisCanvas, gridReadout) {
       bounds.getCenter(target)
       alignmentSize.set(size[alignmentView.horizontal], size[alignmentView.vertical])
       const distance = Math.max(700, size.length())
-      alignmentCamera.position.fromArray(alignmentView.direction).multiplyScalar(distance).add(target)
+      alignmentHome.fromArray(alignmentView.direction).multiplyScalar(distance).add(target)
+      alignmentCamera.position.copy(alignmentHome)
       alignmentCamera.up.fromArray(alignmentView.up)
       alignmentCamera.far = Math.max(8000, distance + size.length() + 10)
       alignmentCamera.lookAt(target)
+      applyPan()
       return
     }
     if (!referenceBounds.isEmpty()) {
@@ -477,10 +483,34 @@ export function createPreview(container, axisCanvas, gridReadout) {
     resize()
   }
 
+  function applyPan() {
+    alignmentCamera.position.copy(alignmentHome)
+    alignmentCamera.translateX(panOffset.x)
+    alignmentCamera.translateY(panOffset.y)
+    panHint.hidden = panOffset.lengthSq() < 1e-12
+    draw()
+  }
+
+  function stopPanDrag() {
+    if (!panDrag) return
+    const { pointerId } = panDrag
+    panDrag = undefined
+    container.classList.remove('is-panning')
+    if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId)
+  }
+
+  function resetPan() {
+    stopPanDrag()
+    panOffset.set(0, 0)
+    applyPan()
+  }
+
   function resetCamera() {
     const active = alignmentView ? alignmentCamera : camera
     active.zoom = 1
-    if (!alignmentView) {
+    if (alignmentView) {
+      resetPan()
+    } else {
       camera.position.copy(initialAngle).multiplyScalar(cameraDistance).add(controls.target)
       controls.update()
     }
@@ -494,14 +524,47 @@ export function createPreview(container, axisCanvas, gridReadout) {
     draw()
   }
 
-  renderer.domElement.addEventListener('wheel', (event) => {
+  canvas.addEventListener('wheel', (event) => {
     if (!alignmentView || !event.deltaY) return
     event.preventDefault()
     const delta = event.deltaY * (event.deltaMode === 1 ? 16 : 1)
     zoom(alignmentCamera, Math.exp(-delta * 0.0015))
   }, { passive: false })
 
-  renderer.domElement.addEventListener('keydown', (event) => {
+  canvas.addEventListener('pointerdown', (event) => {
+    if (!alignmentView || event.button !== 1 || panDrag) return
+    event.preventDefault()
+    canvas.focus({ preventScroll: true })
+    panDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
+    canvas.setPointerCapture(event.pointerId)
+    container.classList.add('is-panning')
+  })
+
+  canvas.addEventListener('pointermove', (event) => {
+    if (panDrag?.pointerId !== event.pointerId) return
+    if (!(event.buttons & 4)) {
+      stopPanDrag()
+      return
+    }
+    const mmPerPixel = (alignmentCamera.top - alignmentCamera.bottom) /
+      (alignmentCamera.zoom * Math.max(container.clientHeight, 1))
+    panOffset.x += (panDrag.x - event.clientX) * mmPerPixel
+    panOffset.y += (event.clientY - panDrag.y) * mmPerPixel
+    panDrag.x = event.clientX
+    panDrag.y = event.clientY
+    applyPan()
+  })
+
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    canvas.addEventListener(type, (event) => {
+      if (panDrag?.pointerId === event.pointerId) stopPanDrag()
+    })
+  }
+  canvas.addEventListener('auxclick', (event) => {
+    if (alignmentView && event.button === 1) event.preventDefault()
+  })
+
+  canvas.addEventListener('keydown', (event) => {
     const movement = { ArrowLeft: [-0.15, 0], ArrowRight: [0.15, 0], ArrowUp: [0, -0.15], ArrowDown: [0, 0.15] }[event.key]
     if (movement && !alignmentView) {
       const offset = camera.position.clone().sub(controls.target)
@@ -517,6 +580,12 @@ export function createPreview(container, axisCanvas, gridReadout) {
       return
     }
     event.preventDefault()
+  })
+
+  container.closest('.preview').addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !alignmentView || panHint.hidden) return
+    event.preventDefault()
+    resetPan()
   })
 
   controls.addEventListener('change', draw)
@@ -554,11 +623,12 @@ export function createPreview(container, axisCanvas, gridReadout) {
       arrange()
     },
     setOrientation(orientation) {
+      resetPan()
       alignmentView = alignmentViews[orientation]
       controls.enabled = !alignmentView
       container.classList.toggle('is-aligned', Boolean(alignmentView))
-      renderer.domElement.setAttribute('aria-label', alignmentView
-        ? 'Enclosure ' + orientation + ' view. Use plus or minus to zoom.'
+      canvas.setAttribute('aria-label', alignmentView
+        ? 'Enclosure ' + orientation + ' view. Middle-drag to pan, use plus or minus to zoom, and press Escape to reset pan.'
         : 'Enclosure preview. Use arrow keys to orbit, and plus or minus to zoom.')
       base.setTranslucent(Boolean(alignmentView))
       lid.setTranslucent(Boolean(alignmentView))

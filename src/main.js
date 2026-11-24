@@ -278,7 +278,7 @@ setReady(false)
 if (restoreError) showNotice(restoreError + ' The example is open. Autosave resumes when you open or reset a project.')
 
 try {
-  preview = createPreview($('#scene'), $('#axes'), $('#grid-spacing'))
+  preview = createPreview($('#scene'), $('#axes'), $('#grid-spacing'), $('#pan-hint'))
 } catch {
   previewMessage.textContent = 'The live preview needs WebGL. You can still edit and export this project.'
   for (const control of [...viewButtons, ...orientationButtons, ...document.querySelectorAll('.viewport-tools button'), bananaToggle]) {
@@ -345,7 +345,7 @@ for (const button of orientationButtons) {
   button.addEventListener('click', () => {
     const { orientation } = button.dataset
     for (const option of orientationButtons) option.setAttribute('aria-pressed', String(option === button))
-    $('#preview-help').textContent = orientation === '3d' ? 'Drag to orbit · Scroll to zoom' : 'Scroll to zoom'
+    $('#preview-help').textContent = orientation === '3d' ? 'Drag to orbit · Scroll to zoom' : 'Middle-drag to pan · Scroll to zoom'
     preview?.setOrientation(orientation)
   })
 }
