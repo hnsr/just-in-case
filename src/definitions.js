@@ -95,9 +95,9 @@ export const PRIMITIVES = {
 export const CABLE_DUCT_RAIL = 2
 export const CABLE_DUCT_FLARE = 1
 export const CABLE_DUCT_FITS = {
-  easy: { label: 'Easy', interference: 0.02 },
-  standard: { label: 'Standard', interference: 0.04 },
-  snug: { label: 'Snug', interference: 0.08 },
+  easy: { label: 'Easy', interference: 0 },
+  standard: { label: 'Standard', interference: 0.02 },
+  snug: { label: 'Snug', interference: 0.04 },
 }
 export const CABLE_DUCT_PLACEMENT_FIELDS = {
   x: PLACEMENT_FIELDS.x,

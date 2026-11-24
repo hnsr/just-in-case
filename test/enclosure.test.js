@@ -127,16 +127,16 @@ test('a raised cable duct prints with staggered teeth from end to end and from s
   for (let i = 0; i < 12; i++) {
     const x = -19 + 38 * i / 11
     const side = i % 2 === 0 ? 1 : -1
-    closeTo(firstHit([x, 0, seat + 0.01], [0, side, 0]).y, side * 2)
-    closeTo(firstHit([x, 0, seat + 4.4], [0, side, 0]).y, side * 1.65)
+    closeTo(firstHit([x, 0, seat + 0.01], [0, side, 0]).y, side * 2.1)
+    closeTo(firstHit([x, 0, seat + 4.4], [0, side, 0]).y, side * 1.75)
     closeTo(firstHit([x, 0, seat + 4.4], [0, -side, 0]).y, -side * 2.8)
     closeTo(firstHit([x, side * 2.6, seat + 12], [0, 0, -1]).z, seat + 5.65)
   }
-  closeTo(firstHit([-19, 0, seat + 4.2], [0, 1, 0]).y, 1.85)
-  closeTo(firstHit([-19, 0, seat + 5.4], [0, 1, 0]).y, 2.25)
+  closeTo(firstHit([-19, 0, seat + 4.2], [0, 1, 0]).y, 1.95)
+  closeTo(firstHit([-19, 0, seat + 5.4], [0, 1, 0]).y, 2.31)
   for (const side of [1, -1]) {
     const endBevel = firstHit([-side * 19.99, 0, seat + 4.4], [0, side, 0]).y * side
-    assert(endBevel > 1.65 && endBevel < 2.8, 'the end tooth reaches the duct end and has a beveled corner')
+    assert(endBevel > 1.75 && endBevel < 2.8, 'the end tooth reaches the duct end and has a beveled corner')
     closeTo(firstHit([-side * 17.8, 0, seat + 4.4], [0, side, 0]).y, side * 2.8)
   }
   closeTo(firstHit([-24, 0, seat + 2.5], [1, 0, 0]).x, 47.6)
@@ -272,7 +272,7 @@ test('cable duct fit presets adjust the sample grip and the opening under the li
   const duct = makeFeature('cable-duct', project.root)
   project.root.features.push(duct)
   const direction = new THREE.Vector3(0, 1, 0)
-  for (const [fit, gap] of [['easy', 4.9], ['standard', 4.8], ['snug', 4.6]]) {
+  for (const [fit, gap] of [['easy', 5], ['standard', 4.9], ['snug', 4.8]]) {
     duct.properties.fit = fit
     const sample = buildSample(geometry, evaluateSample(project, 'root.features.0'))
     const surface = raycastSurface(sample.mesh)
