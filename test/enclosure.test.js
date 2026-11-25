@@ -3,7 +3,7 @@ import test from 'node:test'
 import * as THREE from 'three'
 import { createCutterOutline } from '../src/cutter-outline.js'
 import { buildEnclosure, buildSample, initGeometry } from '../src/geometry.js'
-import { defaultProject, evaluateProject, evaluateSample, makeChild, makeFeature, newProject, parseProject, projectJSON, screwClosureDraftIssues } from '../src/project.js'
+import { defaultProject, evaluateProject, evaluateSample, makeChild, newProject, parseProject, projectJSON, screwClosureDraftIssues } from '../src/project.js'
 import { LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, cornerFasteners, makePrimitive } from '../src/definitions.js'
 import { enclosureSTL, sampleSTL } from '../src/stl.js'
 
@@ -119,9 +119,9 @@ test('ports on all four walls remove material and PCB corner mounts add it', () 
 
 test('a raised cable duct prints with staggered teeth from end to end and from seat to rim', () => {
   const project = newProject()
-  const duct = makeFeature('cable-duct', project.root)
+  const duct = makeChild('cable-duct')
   duct.parameters.baseHeight = 10
-  project.root.features.push(duct)
+  project.root.children.push(duct)
   const model = build(parseProject(projectJSON(project)))
   const surface = raycastSurface(model.base)
   const seat = project.root.parameters.floor + duct.parameters.baseHeight
@@ -152,50 +152,74 @@ test('a raised cable duct prints with staggered teeth from end to end and from s
   surface.material.dispose()
 })
 
-test('cable ducts are repeatable floor features with independent placement and fit settings', () => {
+test('cable ducts can be placed independently on the enclosure floor', () => {
   const project = newProject('screw-fastened')
-  const first = makeFeature('cable-duct', project.root)
-  project.root.features.push(first)
-  const second = makeFeature('cable-duct', project.root)
-  assert.notEqual(first.parameters.y, second.parameters.y)
-  project.root.features.push(second)
+  const first = makeChild('cable-duct', true, project.root)
+  project.root.children.push(first)
+  const second = makeChild('cable-duct', true, project.root)
+  assert.notEqual(first.placement.y, second.placement.y)
+  project.root.children.push(second)
   project.variables.push({ name: 'cable', value: 6 }, { name: 'exitHeight', value: 15 })
-  Object.assign(second.parameters, { x: 30, y: 8, angle: 90, cableDiameter: 'cable', baseHeight: 'exitHeight - 2.4 - cable / 2' })
+  Object.assign(second.placement, { x: 30, y: 8, angle: 90 })
+  Object.assign(second.parameters, { cableDiameter: 'cable', baseHeight: 'exitHeight - 2.4 - cable / 2' })
   second.properties.fit = 'snug'
   const checked = evaluateProject(project)
   assert.deepEqual(checked.issues, [])
-  assert.equal(checked.root.features[1].parameters.baseHeight, 9.6)
-  assert.equal(checked.root.features[1].properties.fit, 'snug')
+  assert.equal(checked.root.children[1].parameters.baseHeight, 9.6)
+  assert.equal(checked.root.children[1].properties.fit, 'snug')
   const { base } = build(project)
   assert(hasVertex(base, 37, 28, 12), 'the second seat is rotated and lifted to the prescribed cable center')
   second.parameters.baseWidth = 12
   assert(evaluateProject(project).issues.some(({ field }) => field.endsWith('.baseWidth')))
-  second.parameters.baseWidth = 14
-  const child = makeChild('repeater')
-  child.features.push(makeFeature('cable-duct', project.root))
-  project.root.children.push(child)
-  assert(evaluateProject(project).issues.some(({ message }) => /unsupported features/.test(message)))
+})
+
+test('a nested cable duct follows its parent, joins its support, and can be hidden or exported', () => {
+  const project = newProject()
+  const support = makeChild('repeater')
+  Object.assign(support.placement, { x: 12, y: -6, angle: 90 })
+  Object.assign(support.parameters.primitive.parameters, { width: 26, depth: 20, height: 4 })
+  const duct = makeChild('cable-duct', false)
+  duct.parameters.baseLength = 20
+  Object.assign(duct.placement, { x: 2, y: 1, z: 4 })
+  support.children.push(duct)
+  project.root.children.push(support)
+  const path = 'root.children.0.children.0'
+  const root = evaluateProject(project).root
+  const model = buildEnclosure(geometry, root, { hiddenPaths: new Set([path]) })
+  assert(hasVertex(model.base, 4, 6, 8.35))
+  assert(model.base.runs.some((run) => run.path === path))
+  assert(!hasVertex(model.visibleParts.base, 4, 6, 8.35))
+  inspectSTL(enclosureSTL(model, 'both'))
+  const sample = buildSample(geometry, evaluateSample(project, path))
+  assert.deepEqual(inspectSTL(sampleSTL(sample)).max, [7, 10, 7.65])
+
+  duct.placement.z = 12
+  const draft = buildEnclosure(geometry, evaluateProject(project).root, { preview: true })
+  assert.equal(draft.previewIssues[0].field, path + '.placement')
+  assert(draft.previewGuides.some(({ mesh }) => hasVertex(mesh, 4, 6, 16.35)))
 })
 
 test('a cable duct follows invalid base height and placement as a draft and clears the warning when moved', () => {
   const project = newProject('split')
-  const duct = makeFeature('cable-duct', project.root)
-  project.root.features.push(duct)
+  const duct = makeChild('cable-duct')
+  project.root.children.push(duct)
   const draft = () => buildEnclosure(geometry, evaluateProject(project).root, { preview: true })
   duct.parameters.baseHeight = 42
   let model = draft()
-  assert.equal(model.previewIssues[0].field, 'root.features.0.parameters.baseHeight')
-  assert.match(model.previewIssues[0].message, /above the interior/)
+  assert.equal(model.previewIssues[0].field, 'root.children.0.placement')
+  assert.match(model.previewIssues[0].message, /extends outside/)
   assert(model.previewGuides.some(({ part, mesh }) => part === 'base' && hasVertex(mesh, 20, 7, 44.4)))
-  assert.throws(() => enclosureSTL(model, 'base'), /above the interior/)
-  assert.throws(() => build(project), /above the interior/)
+  assert.throws(() => enclosureSTL(model, 'base'), /extends outside/)
+  assert.throws(() => build(project), /extends outside/)
 
-  Object.assign(duct.parameters, { baseHeight: 14, y: 24 })
+  duct.parameters.baseHeight = 14
+  duct.placement.y = 24
   model = draft()
-  assert.match(model.previewIssues[0].message, /overlaps the assembled upper half/)
-  duct.parameters.y = 33
-  assert.match(draft().previewIssues[0].message, /overlaps the inside wall/)
-  duct.parameters.y = 0
+  assert.match(model.previewIssues[0].message, /intersects the opposite half/)
+  assert(model.previewGuides.length > 0)
+  duct.placement.y = 33
+  assert.match(draft().previewIssues[0].message, /extends outside/)
+  duct.placement.y = 0
   model = draft()
   assert.deepEqual(model.previewIssues, [])
   assert.deepEqual(model.previewGuides, [])
@@ -260,28 +284,30 @@ test('samples flag raised separate pieces and keep independent pieces that alrea
 test('a cable duct sample keeps its full pedestal and skips enclosure clearance checks', () => {
   const project = newProject('split')
   project.root.parameters.floor = 'missingFloor'
-  const duct = makeFeature('cable-duct', project.root)
-  Object.assign(duct.parameters, { x: 70, angle: 90, baseHeight: 20 })
-  project.root.features.push(duct, cutout('Right', 'Circle', 6, 6, 0, 12))
-  const path = 'root.features.0'
+  const duct = makeChild('cable-duct')
+  Object.assign(duct.placement, { x: 70, angle: 90 })
+  duct.parameters.baseHeight = 20
+  project.root.children.push(duct)
+  project.root.features.push(cutout('Right', 'Circle', 6, 6, 0, 12))
+  const path = 'root.children.0'
   const sample = buildSample(geometry, evaluateSample(project, path))
   const stl = inspectSTL(sampleSTL(sample))
   assert.deepEqual(stl.min, [-7, -20, 0])
   assert.deepEqual(stl.max, [7, 20, 25.65])
   assert.equal(sample.floatingPieces, 0)
-  assert.throws(() => evaluateSample(project, 'root.features.1'), /adds geometry/)
+  assert.throws(() => evaluateSample(project, 'root.features.0'), /non-root object/)
   duct.parameters.baseWidth = 10
   assert.throws(() => evaluateSample(project, path), /base at least 11.2 mm wide/)
 })
 
 test('cable duct fit presets adjust the sample grip and the opening under the lip', () => {
   const project = newProject()
-  const duct = makeFeature('cable-duct', project.root)
-  project.root.features.push(duct)
+  const duct = makeChild('cable-duct')
+  project.root.children.push(duct)
   const direction = new THREE.Vector3(0, 1, 0)
   for (const [fit, gap] of [['easy', 5], ['standard', 4.9], ['snug', 4.8]]) {
     duct.properties.fit = fit
-    const sample = buildSample(geometry, evaluateSample(project, 'root.features.0'))
+    const sample = buildSample(geometry, evaluateSample(project, 'root.children.0'))
     const surface = raycastSurface(sample.mesh)
     const hitY = (x, z) => new THREE.Raycaster(new THREE.Vector3(x, 0, z), direction).intersectObject(surface)[0].point.y
     const seat = duct.parameters.baseHeight
@@ -294,59 +320,14 @@ test('cable duct fit presets adjust the sample grip and the opening under the li
   }
 })
 
-test('older cable ducts preserve the cable seat and placement when opened', () => {
-  const project = newProject()
-  project.variables.push({ name: 'pedestal', value: 2 }, { name: 'liftHeight', value: 7.1 })
-  project.root.features.push({
-    type: 'cable-duct',
-    properties: {},
-    parameters: {
-      baseLength: 40, baseWidth: 14, baseThickness: '= pedestal', lift: 'liftHeight',
-      cableDiameter: 5, ductWidth: 6.2, snapGap: 4.7, lateralOffset: 0.35, minimumBendRadius: 15,
-      x: 1, y: -3, angle: 90,
-    },
-  })
-  const migrated = parseProject(projectJSON(project))
-  const [duct] = migrated.root.features
-  assert.deepEqual(duct.properties, { fit: 'standard' })
-  assert.deepEqual(duct.parameters, {
-    baseLength: 40, baseWidth: 14, baseHeight: '(pedestal) + (liftHeight)', cableDiameter: 5,
-    x: 1, y: -3, angle: 90,
-  })
-  assert.equal(evaluateProject(migrated).root.features[0].parameters.baseHeight, 9.1)
-  assert.deepEqual(parseProject(projectJSON(migrated)), migrated)
-})
-
-test('legacy screw posts open as a positioned PCB screw mount', () => {
-  const source = {
-    version: 1,
-    name: 'Old electronics enclosure',
-    body: { width: 100, depth: 70, height: 30, wall: 2.4, floor: 2.4, radius: 5 },
-    lid: { thickness: 2.4, lip: 3.2, clearance: 0.25 },
-    cutouts: [
-      { side: 'Front', shape: 'Rectangle', width: 16, height: 8, offset: -21, z: 12 },
-      { side: 'Right', shape: 'Circle', width: 11, height: 8, offset: 9, z: 14 },
-    ],
-    mounts: { enabled: true, height: 6, diameter: 7, hole: 2.7, inset: 12 },
+test('project files require the current format version', () => {
+  const project = defaultProject()
+  const currentVersion = project.version
+  assert.deepEqual(parseProject(projectJSON(project)), project)
+  for (const version of [1, 2, currentVersion + 1, undefined]) {
+    assert.throws(() => parseProject(projectJSON({ ...project, version })),
+      { message: 'Choose a Just in Case project with format version ' + currentVersion + '.' })
   }
-  const migrated = parseProject(JSON.stringify(source))
-  assert.equal(migrated.version, 2)
-  assert.equal(migrated.name, source.name)
-  assert.deepEqual(migrated.root.features, defaultProject().root.features)
-  const [mount] = migrated.root.children
-  assert.equal(mount.type, 'pcb-corner-mount')
-  assert.equal(mount.properties.fastening, 'screw')
-  assert.deepEqual(mount.parameters, {
-    boardWidth: 83, boardDepth: 53, boardThickness: 1.6, baseHeight: 6, wallThickness: 1.6, clearance: 0.2,
-    pilotDiameter: 2.7, holeInsetX: 3.5, holeInsetY: 3.5,
-  })
-  assert.deepEqual(parseProject(projectJSON(migrated)), migrated)
-  const model = build(migrated)
-  assert(hasVertex(model.base, 38 + 1.35, 23, 8.4))
-  inspectSTL(enclosureSTL(model, 'both'))
-  source.mounts.enabled = false
-  assert.equal(parseProject(JSON.stringify(source)).root.children.length, 0)
-  assert.throws(() => parseProject('{"version":3}'), /version 1 or 2/)
   assert.throws(() => parseProject('['), /valid JSON/)
 })
 
@@ -491,12 +472,6 @@ test('a counterbore leaves solid lid thickness above the locating recess', () =>
   inspectSTL(enclosureSTL(model, 'both'))
   p.counterboreDepth = 1.4
   assert.throws(() => build(project), /between it and the locating recess/)
-})
-
-test('an old standalone screw closure reports that the feature has moved', () => {
-  const project = newProject()
-  project.root.features.push({ type: 'screw-closure', properties: {}, parameters: {} })
-  assert.throws(() => parseProject(JSON.stringify(project)), /built into the Screw-fastened enclosure/)
 })
 
 test('screw-fastened drafts show invalid dimensions and collisions while blocking export', () => {

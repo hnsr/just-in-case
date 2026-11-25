@@ -8,7 +8,7 @@ import { addIcons } from './icons.js'
 import { createInspector } from './inspector.js'
 import { createPreview } from './preview.js'
 import {
-  STORAGE_KEY, LEGACY_STORAGE_KEY, defaultProject, newProject, parseProject, projectJSON, evaluateProject, evaluateSample, screwClosureDraftIssues,
+  STORAGE_KEY, defaultProject, newProject, parseProject, projectJSON, evaluateProject, evaluateSample, screwClosureDraftIssues,
 } from './project.js'
 import { enclosureSTL, sampleSTL } from './stl.js'
 
@@ -41,7 +41,7 @@ let viewMode = 'exploded'
 
 function restoreProject() {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY)
+    const saved = localStorage.getItem(STORAGE_KEY)
     if (saved) return parseProject(saved)
   } catch (error) {
     restoreError = error.message || 'The saved project could not be loaded.'
@@ -189,8 +189,7 @@ function updateModel() {
     if (model.previewIssues.length) {
       displayModel(model, evaluation.root, objectPaths, screwIssues)
       const placementOnly = model.previewIssues.every(({ field }) => field.endsWith('.placement'))
-      const ductIssue = model.previewIssues.some(({ field }) => field.startsWith('root.features.'))
-      status(placementOnly ? 'Placement needs adjustment' : ductIssue ? 'Feature needs adjustment' : 'Screw closure needs adjustment', 'error')
+      status(placementOnly ? 'Placement needs adjustment' : 'Screw closure needs adjustment', 'error')
       setReady(false)
       return
     }

@@ -34,6 +34,7 @@ export const SCREW_FIELDS = {
 export const LOCATOR_HEIGHT = 0.8
 export const LOCATOR_RECESS_DEPTH = 1
 export const LOCATOR_SLOT_TRAVEL = 0.5
+export const BOOLEAN_OVERLAP = 0.05
 
 export const PCB_MOUNT_FASTENINGS = {
   screw: {
@@ -56,6 +57,15 @@ export const PCB_MOUNT_FASTENINGS = {
 export const PCB_PILOT_MARGIN = 1
 
 export const CHILD_TYPES = {
+  'cable-duct': {
+    label: 'Cable duct', icon: 'cable',
+    fields: {
+      baseLength: mm('Base length', 40, 12, 300),
+      baseWidth: mm('Base width', 14, 8, 120),
+      baseHeight: mm('Base height', 2, 1, 200),
+      cableDiameter: mm('Cable diameter', 5, 1.5, 30),
+    },
+  },
   'pcb-corner-mount': {
     label: 'PCB corner mount', icon: 'bolt',
     fields: {
@@ -106,12 +116,6 @@ export const CABLE_DUCT_FITS = {
   standard: { label: 'Standard', interference: 0.02 },
   snug: { label: 'Snug', interference: 0.04 },
 }
-export const CABLE_DUCT_PLACEMENT_FIELDS = {
-  x: PLACEMENT_FIELDS.x,
-  y: PLACEMENT_FIELDS.y,
-  angle: PLACEMENT_FIELDS.angle,
-}
-
 export const FEATURES = {
   cutout: {
     label: 'Wall cutout', icon: 'scissors',
@@ -120,16 +124,6 @@ export const FEATURES = {
       height: mm('Height', 6, 1, 200),
       offset: mm('Wall offset', 0, -200, 200),
       z: mm('Center from enclosure bottom', 12, 0, 200),
-    },
-  },
-  'cable-duct': {
-    label: 'Cable duct', icon: 'cable',
-    fields: {
-      baseLength: mm('Base length', 40, 12, 300),
-      baseWidth: mm('Base width', 14, 8, 120),
-      baseHeight: mm('Base height', 2, 1, 200),
-      cableDiameter: mm('Cable diameter', 5, 1.5, 30),
-      ...CABLE_DUCT_PLACEMENT_FIELDS,
     },
   },
 }

@@ -7,8 +7,8 @@ import {
   makePrimitive, parameterFields,
 } from './definitions.js'
 
-export const STORAGE_KEY = 'just-in-case.project.v2'
-export const LEGACY_STORAGE_KEY = 'just-in-case.project.v1'
+const PROJECT_VERSION = 3
+export const STORAGE_KEY = 'just-in-case.project.v' + PROJECT_VERSION
 export const MAX_VARIABLES = 32
 export const MAX_FEATURES = 24
 export const MAX_OBJECTS = 40
@@ -21,48 +21,50 @@ export function addsGeometry(object) {
 export function newProject(type = 'lidded', includeLid = true) {
   const root = { type, properties: type === 'lidded' ? { includeLid } : {}, parameters: {}, features: [], children: [] }
   root.parameters = fieldDefaults(parameterFields(root))
-  return { version: 2, name: 'Electronics enclosure', variables: [], root }
+  return { version: PROJECT_VERSION, name: 'Electronics enclosure', variables: [], root }
 }
 
-export function makeChild(type, direct = true) {
+export function makeChild(type, direct = true, root) {
   const object = {
     type,
     name: CHILD_TYPES[type].label,
-    properties: type === 'repeater' ? { operation: 'add' } : { fastening: 'screw' },
+    properties: {},
     parameters: {},
     placement: { ...fieldDefaults(PLACEMENT_FIELDS), ...(direct ? { part: 'base' } : {}) },
     features: [],
     children: [],
   }
+  if (type === 'pcb-corner-mount') object.properties.fastening = 'screw'
+  if (type === 'cable-duct') object.properties.fit = 'standard'
   object.parameters = fieldDefaults(parameterFields(object))
   if (type === 'repeater') {
+    object.properties.operation = 'add'
     object.parameters.primitive = makePrimitive('box')
     if (direct) object.placement.x = -15
   }
+  if (type === 'cable-duct' && direct && root) placeNewDuct(object, root)
   return object
+}
+
+function placeNewDuct({ parameters, placement }, root) {
+  const p = root.parameters
+  const alongY = p.depth > p.width
+  const edge = Math.max(p.wall, p.radius) + 0.5
+  const [span, across, offset] = alongY ? [p.depth, p.width, 'x'] : [p.width, p.depth, 'y']
+  placement.angle = alongY ? 90 : 0
+  parameters.baseLength = Math.max(CHILD_TYPES['cable-duct'].fields.baseLength.min,
+    Math.min(parameters.baseLength, span - 2 * edge))
+  const ducts = root.children.filter((item) => item.type === 'cable-duct' && item.placement.part === 'base')
+  const spacing = parameters.baseWidth + 1
+  const lanes = Math.max(0, Math.floor((across / 2 - edge - parameters.baseWidth / 2) / spacing))
+  const candidates = [0, ...Array.from({ length: lanes }, (_, i) => [spacing * (i + 1), -spacing * (i + 1)]).flat()]
+  placement[offset] = candidates.find((value) => ducts.every((duct) =>
+    Math.abs(value - duct.placement[offset]) >= (parameters.baseWidth + duct.parameters.baseWidth) / 2 + 0.5)) ?? 0
 }
 
 export function makeFeature(type, root) {
   const feature = { type, properties: {}, parameters: fieldDefaults(FEATURES[type].fields) }
   const p = root.parameters
-  if (type === 'cable-duct') {
-    feature.properties.fit = 'standard'
-    const f = feature.parameters
-    const alongY = p.depth > p.width
-    const edge = Math.max(p.wall, p.radius) + 0.5
-    const [span, across, offset] = alongY ? [p.depth, p.width, 'x'] : [p.width, p.depth, 'y']
-    f.angle = alongY ? 90 : 0
-    f.baseLength = Math.max(FEATURES[type].fields.baseLength.min, Math.min(f.baseLength, span - 2 * edge))
-    const ducts = root.features.filter((item) => item.type === type)
-    const spacing = f.baseWidth + 1
-    const lanes = Math.max(0, Math.floor((across / 2 - edge - f.baseWidth / 2) / spacing))
-    const candidates = [0, ...Array.from({ length: lanes }, (_, i) => [spacing * (i + 1), -spacing * (i + 1)]).flat()]
-    f[offset] = candidates.find((value) => ducts.every(({ parameters }) =>
-      Math.abs(value - parameters[offset]) >= (f.baseWidth + parameters.baseWidth) / 2 + 0.5)) ?? 0
-    return feature
-  }
-  if (type !== 'cutout') return feature
-
   const { height, hasUpper } = enclosureLayout(root)
   const top = hasUpper ? p.thickness : 0
   const edge = Math.max(p.wall, p.radius) + 1
@@ -102,71 +104,6 @@ function record(value) {
 
 function demand(condition, message) {
   if (!condition) throw new Error(message)
-}
-
-function formulaTerm(value) {
-  return '(' + String(value).trim().replace(/^=\s*/, '') + ')'
-}
-
-function screwCornerParameters({ pitchX, pitchY, height, diameter, pilotDiameter }) {
-  // Earlier mounts specified hole spacing. Use half the old post width as the
-  // estimated board inset, which keeps all four screw centers in place.
-  const inset = typeof diameter === 'number' ? diameter / 2 : formulaTerm(diameter) + ' / 2'
-  const boardSize = (pitch) => typeof pitch === 'number' && typeof diameter === 'number'
-    ? pitch + diameter : formulaTerm(pitch) + ' + ' + formulaTerm(diameter)
-  return { boardWidth: boardSize(pitchX), boardDepth: boardSize(pitchY), baseHeight: height, pilotDiameter,
-    holeInsetX: inset, holeInsetY: inset }
-}
-
-function legacyScrewMount(body, { height, diameter, hole, inset }) {
-  function spacing(size) {
-    if (typeof size === 'number' && typeof inset === 'number') return size - 2 * inset
-    return formulaTerm(size) + ' - 2 * ' + formulaTerm(inset)
-  }
-  const mount = makeChild('pcb-corner-mount')
-  Object.assign(mount.parameters, screwCornerParameters({
-    pitchX: spacing(body.width), pitchY: spacing(body.depth), height, diameter, pilotDiameter: hole,
-  }))
-  return mount
-}
-
-function migratePCBMounts(object, depth = 0) {
-  if (depth > MAX_DEPTH || !record(object)) return
-  const { type, parameters: old } = object
-  if (record(old) && (type === 'pcb-screw-mount' || type === 'pcb-mount')) {
-    const screw = type === 'pcb-screw-mount'
-    const fastening = screw ? 'screw' : 'snap-fit'
-    const dimensions = screw ? screwCornerParameters(old) : {
-      boardWidth: old.boardWidth, boardDepth: old.boardDepth, boardThickness: old.boardThickness,
-      baseHeight: old.support, wallThickness: old.wall, clearance: old.clearance, clipOverhang: old.grip, seatSize: 5,
-    }
-    object.type = 'pcb-corner-mount'
-    object.properties = { fastening }
-    object.parameters = { ...fieldDefaults(parameterFields(object)), ...dimensions }
-    if (object.name === (screw ? 'PCB screw mounts' : 'PCB press-fit mounts')) {
-      object.name = CHILD_TYPES[object.type].label
-    }
-  }
-  if (Array.isArray(object.children)) object.children.forEach((child) => migratePCBMounts(child, depth + 1))
-}
-
-function migrateV1(value) {
-  demand(record(value.body) && record(value.lid) && record(value.mounts) &&
-    typeof value.mounts.enabled === 'boolean' && Array.isArray(value.cutouts) &&
-    value.cutouts.length <= 16 && value.cutouts.every(record), 'The version 1 project is missing enclosure settings.')
-  const project = newProject()
-  project.name = value.name
-  const fields = { ...value.body, ...value.lid }
-  project.root.parameters = Object.fromEntries(Object.keys(parameterFields(project.root)).map((key) => [key, fields[key]]))
-  project.root.features = value.cutouts.map(({ side, shape, width, height, offset, z }) => ({
-    type: 'cutout',
-    properties: { side, shape },
-    parameters: shape === 'Circle' ? { width, offset, z } : { width, height, offset, z },
-  }))
-  if (value.mounts.enabled) {
-    project.root.children.push(legacyScrewMount(project.root.parameters, value.mounts))
-  }
-  return project
 }
 
 function validateCornerFasteners(p, field) {
@@ -246,10 +183,6 @@ function validateRoot(root, mark) {
     const f = feature.parameters
     const label = FEATURES[feature.type].label + ' ' + (index + 1)
     const issue = (key, message) => mark('root.features.' + index + '.parameters.' + key, label + ' ' + message)
-    if (feature.type === 'cable-duct') {
-      validateCableDuct(f, issue)
-      return
-    }
     const wallLength = ['Front', 'Back'].includes(feature.properties.side) ? p.width : p.depth
     const openingHeight = feature.properties.shape === 'Circle' ? f.width : f.height
     if (Math.abs(f.offset) + f.width / 2 > wallLength / 2 - Math.max(p.radius, p.wall) - 1) {
@@ -325,14 +258,7 @@ function evaluate(project, samplePath) {
   }
 
   function visitFeature(feature, path, root) {
-    demand(feature?.type !== 'screw-closure', 'Screw closure is now built into the Screw-fastened enclosure type.')
     demand(record(feature) && Object.hasOwn(FEATURES, feature.type) && record(feature.properties), 'This project contains an unknown feature.')
-    if (feature.type === 'cable-duct') {
-      const { fit } = feature.properties
-      if (!Object.hasOwn(CABLE_DUCT_FITS, fit)) mark(path + '.properties.fit', 'Choose a push-in fit for the cable duct.')
-      const parameters = fields(feature.parameters, featureFields(feature), path + '.parameters')
-      return { type: feature.type, properties: { fit }, parameters }
-    }
     const { side, shape, placement = 'height' } = feature.properties
     demand(SIDES.includes(side) && SHAPES.includes(shape), 'A wall cutout is missing its wall or shape.')
     demand(placement === 'height' || (placement === 'seam' && root.type === 'split'),
@@ -365,6 +291,11 @@ function evaluate(project, samplePath) {
       demand(Object.hasOwn(PCB_MOUNT_FASTENINGS, fastening), 'Choose Screw or Snap-fit for the PCB corner mount.')
       next.properties.fastening = fastening
     }
+    if (type === 'cable-duct') {
+      const { fit } = object.properties
+      if (!Object.hasOwn(CABLE_DUCT_FITS, fit)) mark(path + '.properties.fit', 'Choose a push-in fit for the cable duct.')
+      next.properties.fit = fit
+    }
     if (object.properties.reference !== undefined) {
       demand(CHILD_TYPES[type]?.supportsReference && typeof object.properties.reference === 'boolean',
         'Reference only must be a checkbox value on an object that supports it.')
@@ -396,6 +327,10 @@ function evaluate(project, samplePath) {
       validatePCBMount(next.parameters, next.properties.fastening,
         (field, message) => mark(path + '.parameters.' + field, message))
     }
+    if (type === 'cable-duct') {
+      validateCableDuct(next.parameters, (field, message) =>
+        mark(path + '.parameters.' + field, 'Cable duct ' + message))
+    }
     if (root) hasUpper = enclosureLayout(next).hasUpper
     next.features = object.features.map((feature, index) => visitFeature(feature, path + '.features.' + index, next))
     next.children = object.children.flatMap((child, index) => {
@@ -406,15 +341,6 @@ function evaluate(project, samplePath) {
   }
 
   function prepareSample(path) {
-    if (/^root\.features\.\d+$/.test(path)) {
-      const raw = objectAt(project, path)
-      demand(raw?.type === 'cable-duct', 'Choose a feature that adds geometry to export a sample.')
-      const feature = visitFeature(raw, path, project.root)
-      const label = FEATURES[feature.type].label
-      validateCableDuct(feature.parameters, (key, message) => mark(path + '.parameters.' + key, label + ' ' + message))
-      return { feature, label }
-    }
-
     demand(/^root(?:\.children\.\d+)+$/.test(path), 'Choose a non-root object to export a sample.')
     const indices = path.split('.children.').slice(1)
     demand(indices.length <= MAX_DEPTH, 'The object hierarchy is too deep.')
@@ -470,34 +396,14 @@ function evaluate(project, samplePath) {
 }
 
 export function parseProject(source) {
-  let value
+  let project
   try {
-    value = JSON.parse(source)
+    project = JSON.parse(source)
   } catch {
     throw new Error('This file does not contain valid JSON.')
   }
-  demand(record(value) && [1, 2].includes(value.version), 'Choose a Just in Case project with format version 1 or 2.')
-  const project = value.version === 1 ? migrateV1(value) : value
-  const { root } = project
-  if (Array.isArray(root?.features) && Array.isArray(root.children)) {
-    root.features = root.features.filter((feature) => {
-      if (feature?.type !== 'screw-posts') return true
-      demand(record(root.parameters) && record(feature.parameters), 'The legacy screw posts are missing their dimensions.')
-      root.children.push(legacyScrewMount(root.parameters, feature.parameters))
-      return false
-    })
-    for (const feature of root.features) {
-      const old = feature?.parameters
-      if (feature?.type !== 'cable-duct' || !record(old) || Object.hasOwn(old, 'baseHeight')) continue
-      const { baseThickness, lift, baseLength, baseWidth, cableDiameter, x, y, angle } = old
-      const baseHeight = typeof baseThickness === 'number' && typeof lift === 'number'
-        ? baseThickness + lift
-        : formulaTerm(baseThickness) + ' + ' + formulaTerm(lift)
-      feature.properties = { fit: 'standard' }
-      feature.parameters = { baseLength, baseWidth, baseHeight, cableDiameter, x, y, angle }
-    }
-  }
-  migratePCBMounts(root)
+  demand(record(project) && project.version === PROJECT_VERSION,
+    'Choose a Just in Case project with format version ' + PROJECT_VERSION + '.')
   const [issue] = evaluateProject(project).issues
   if (issue) throw new Error(issue.message)
   project.name = project.name.trim()

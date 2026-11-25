@@ -376,10 +376,7 @@ details[open] .section-icon { color: var(--accent); }
 .feature-card > summary { min-height: 40px; padding: 0.45rem 0.68rem; font-size: 0.86rem; }
 .feature-card .section-content { padding: 0 0.68rem 0.6rem; }
 .feature-options { margin-bottom: 0.8rem; }
-.feature-placement { min-width: 0; margin: 0.75rem 0 0; padding: 0; border: 0; }
-.feature-placement legend { margin: 0 0 0.4rem; padding: 0; color: var(--secondary-text); font-weight: 600; }
 .feature-actions { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
-.feature-actions .icon-button { min-height: 32px; width: 32px; }
 .primitive-box { padding: 0.68rem; }
 .primitive-box .fields { margin-top: 0.68rem; }
 [data-repeat-settings] { margin-top: 0.75rem; }

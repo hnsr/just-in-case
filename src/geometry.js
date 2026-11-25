@@ -1,12 +1,11 @@
 import createManifold from 'manifold-3d'
 import {
-  CABLE_DUCT_FLARE, CABLE_DUCT_RAIL, cableDuctProfile,
+  BOOLEAN_OVERLAP, CABLE_DUCT_FLARE, CABLE_DUCT_RAIL, cableDuctProfile,
   PCB_PILOT_MARGIN, pcbSeatSize,
   LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, cornerFasteners, enclosureLayout, lidRimWidth,
 } from './definitions.js'
 
 const ARC_STEPS = 16
-const BOOLEAN_OVERLAP = 0.05
 
 export async function initGeometry(wasmURL) {
   const module = await createManifold(wasmURL ? { locateFile: () => wasmURL } : undefined)
@@ -317,11 +316,10 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     ]))
   }
 
-  function cableDuct({ parameters, properties }, floor, overlap = BOOLEAN_OVERLAP) {
-    const { cableDiameter, baseLength, baseWidth, baseHeight, x, y, angle } = parameters
+  function cableDuct({ parameters, properties }, path) {
+    const { cableDiameter, baseLength, baseWidth, baseHeight: seat } = parameters
     const { ductWidth, gripGap } = cableDuctProfile(parameters, properties.fit)
-    const seat = floor + baseHeight
-    const bottom = floor - overlap
+    const bottom = path === 'sample' ? 0 : -BOOLEAN_OVERLAP
     const halfBase = baseWidth / 2
     const inner = ductWidth / 2
     const outer = inner + CABLE_DUCT_RAIL
@@ -330,7 +328,7 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
 
     // Sketch the Y/Z section and extrude it along X. The pedestal and rails are one solid.
     const alongLength = (profile, length) => move(
-      rotate(own(Manifold.extrude([profile], length)), [90, 0, 90]), [-length / 2, 0, 0],
+      rotate(trackSource(own(Manifold.extrude([profile], length)), path), [90, 0, 90]), [-length / 2, 0, 0],
     )
     const body = alongLength([
       [-halfBase, bottom], [halfBase, bottom], [halfBase, seat], [foot, seat],
@@ -356,7 +354,7 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     const footprint = [[-trimHalfLength, anchor + BOOLEAN_OVERLAP], [-trimHalfLength, inner], [-0.65, lipTip - BOOLEAN_OVERLAP],
       [0.65, lipTip - BOOLEAN_OVERLAP], [trimHalfLength, inner], [trimHalfLength, anchor + BOOLEAN_OVERLAP]]
     const trimHeight = top - toothBottom + 2 * BOOLEAN_OVERLAP
-    const trim = move(own(Manifold.extrude([footprint], trimHeight)), [0, 0, toothBottom - BOOLEAN_OVERLAP])
+    const trim = move(trackSource(own(Manifold.extrude([footprint], trimHeight)), path), [0, 0, toothBottom - BOOLEAN_OVERLAP])
     const rightTooth = own(tooth.intersect(trim))
     const leftTooth = rotate(rightTooth, [0, 0, 180])
     // Keep each end flush with a tooth and alternate sides at about 3.2 mm pitch.
@@ -368,42 +366,7 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
       return move(i % 2 === 0 ? rightTooth : leftTooth, [center, 0, 0])
     })
 
-    return move(rotate(union(body, teeth), [0, 0, angle]), [x, y, 0])
-  }
-
-  function addCableDucts(base, assembledLid, fasteners = []) {
-    if (!root.features.some(({ type }) => type === 'cable-duct')) return
-    const ceiling = layout.height - (layout.hasUpper ? p.thickness : 0)
-    const start = p.floor - 2 * BOOLEAN_OVERLAP
-    const cavity = prism(p.wall, ceiling - start + BOOLEAN_OVERLAP, start)
-    const placed = []
-    root.features.forEach((feature, index) => {
-      if (feature.type !== 'cable-duct') return
-      const duct = cableDuct(feature, p.floor)
-      const { min, max } = duct.boundingBox()
-      const issue = (key, detail) => {
-        const message = 'Cable duct ' + (index + 1) + ' ' + detail
-        if (!preview) throw new Error(message)
-        previewIssues.push({ field: 'root.features.' + index + '.parameters.' + key, message })
-        addGuide(duct, 'base')
-      }
-      if (max[2] > ceiling + 0.001) {
-        issue('baseHeight', 'extends above the interior. Reduce the base height or increase the enclosure height.')
-      } else if (subtract(duct, [cavity]).volume() > 0.005) {
-        const crossesY = Math.max(-min[1], max[1]) > p.depth / 2 - p.wall
-        issue(crossesY ? 'y' : 'x', 'overlaps the inside wall. Adjust its X or Y offset, rotation, or base size.')
-      } else if (assembledLid && overlaps(duct, [assembledLid])) {
-        issue('baseHeight', 'overlaps the assembled ' + layout.upperLabel.toLowerCase() + '. Reduce the base height or move it inward.')
-      } else if (overlaps(duct, fasteners)) {
-        issue('x', 'overlaps a corner fastener. Move the duct away from the corner.')
-      } else if (overlaps(duct, placed)) {
-        issue('x', 'overlaps another cable duct. Move the ducts apart.')
-      } else {
-        placed.push(duct)
-        base.adds.push(duct)
-        base.visibleAdds?.push(duct)
-      }
-    })
+    return union(body, teeth)
   }
 
   function repeat({ primitive, count, stepX, stepY, stepZ, turnX, turnY, turnZ }, path) {
@@ -428,6 +391,7 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     const place = (solid) => move(rotate(solid, [0, 0, angle]), [x, y, z + surface])
     let solid
     if (object.type === 'repeater') solid = repeat(object.parameters, path)
+    else if (object.type === 'cable-duct') solid = cableDuct(object, path)
     else solid = pcbCornerMount(object, path)
     const groups = childGroups(object.children, path, { part, toPart: (child) => toPart(place(child)), reference, cutOwner })
     const assemble = (adds) => place(subtract(union(solid, adds), groups.cuts))
@@ -611,13 +575,8 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
 
   try {
     if (sample) {
-      let solid
-      if (sample.feature) {
-        solid = cableDuct(sample.feature, 0, 0)
-      } else {
-        const { solid: branch } = childGeometry(sample.object, 'sample', { surface: 0 })
-        solid = rotate(branch, [0, 0, sample.ancestorAngle])
-      }
+      const { solid: branch } = childGeometry(sample.object, 'sample', { surface: 0 })
+      const solid = rotate(branch, [0, 0, sample.ancestorAngle])
       if (solid.status() !== 'NoError' || solid.isEmpty()) throw new Error('The sample has no usable solid geometry.')
       const { min, max } = solid.boundingBox()
       const floatingPieces = solid.decompose().map(own)
@@ -629,12 +588,10 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     const cutoutFeatures = root.features.filter(({ type }) => type === 'cutout')
     const openings = cutoutFeatures.map((feature) => opening(feature))
     let cornerPads = []
-    let fasteners = []
     const baseChildren = childGroups(root.children, 'root', {
       part: 'base', surface: p.floor, availableHeight: layout.height - (layout.hasUpper ? p.thickness : 0),
     })
     if (!layout.hasUpper) {
-      addCableDucts(baseChildren)
       const { solid, visible } = completePart(tray(layout.baseHeight, p.floor), baseChildren, 'base', openings)
       const visibleParts = visible ? { base: mesh(visible) } : undefined
       return { base: mesh(solid, layout.baseLabel), upper: null, visibleParts, layout, cutters, references, previewIssues, previewGuides }
@@ -686,7 +643,6 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
         for (const hole of lidHoles) addGuide(hole, 'upper', true)
       } else {
         cornerPads = pads
-        fasteners = screwSolids
         baseChildren.adds.push(...collars)
         baseChildren.visibleAdds?.push(...collars)
         baseChildren.cuts.push(...pilots)
@@ -696,13 +652,24 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     if (root.type === 'split') upperChildren.cuts.push(...openings.map(flipUpper))
     const lid = completePart(upper, upperChildren, 'upper')
     const assembledLid = flipUpper(lid.solid)
-    addCableDucts(baseChildren, assembledLid, fasteners)
     const base = completePart(tray(layout.baseHeight, p.floor, cornerPads), baseChildren, 'base', openings)
     const baseMesh = mesh(base.solid, layout.baseLabel)
     const upperMesh = mesh(lid.solid, layout.upperLabel)
-    if (own(base.solid.intersect(assembledLid)).volume() > 0.005) {
+    const intersection = own(base.solid.intersect(assembledLid))
+    if (intersection.volume() > 0.005) {
       const hint = p.lip ? 'Check the lip dimensions and any objects near the mating edge.' : 'Check any objects near the mating edge.'
-      throw new Error('The parts intersect when assembled. ' + hint)
+      const paths = preview ? [...new Set(Array.from(intersection.getMesh().runOriginalID, (id) => objectSources.get(id)))]
+        .filter((path) => objectsByPath.get(path)?.object.type === 'cable-duct') : []
+      if (!paths.length) throw new Error('The parts intersect when assembled. ' + hint)
+      for (const path of paths) {
+        const { name } = objectsByPath.get(path).object
+        previewIssues.push({ field: path + '.placement', message: '“' + name + '” intersects the opposite half when assembled.',
+          hint: 'Move the duct or reduce its base height to clear the opposite half.' })
+      }
+      for (const part of ['base', 'upper']) {
+        const affected = paths.filter((path) => objectsByPath.get(path.split('.').slice(0, 3).join('.')).object.placement.part === part)
+        if (affected.length) addGuide(part === 'base' ? intersection : flipUpper(intersection), part, false, affected)
+      }
     }
     const visibleParts = {
       ...(base.visible && { base: mesh(base.visible) }),

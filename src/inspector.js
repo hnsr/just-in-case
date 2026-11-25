@@ -1,6 +1,6 @@
 import {
   ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES, CUTOUT_PLACEMENTS,
-  CABLE_DUCT_FITS, CABLE_DUCT_PLACEMENT_FIELDS, PCB_MOUNT_FASTENINGS,
+  BOOLEAN_OVERLAP, CABLE_DUCT_FITS, PCB_MOUNT_FASTENINGS,
   SCREW_FIELDS, isScrewParameter, enclosureLayout, featureFields, makePrimitive, parameterFields,
 } from './definitions.js'
 import { MAX_DEPTH, MAX_FEATURES, MAX_OBJECTS, MAX_VARIABLES, addsGeometry, makeChild, makeFeature, newProject, objectAt } from './project.js'
@@ -336,48 +336,30 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
 
   function featureCard(feature, index, enclosureType) {
     const key = path + '.features.' + index
-    const { type, properties, parameters } = feature
-    const duct = type === 'cable-duct'
+    const { properties, parameters } = feature
     const atSeam = properties.placement === 'seam'
-    const title = duct ? FEATURES[type].label : properties.side + ' wall cutout'
-    const summary = duct ? undefined : properties.shape + (atSeam ? ' · Seam' : '')
-    const { details, content } = disclosure(title, key, { summary, glyph: duct ? FEATURES[type].icon : undefined })
+    const title = properties.side + ' wall cutout'
+    const summary = properties.shape + (atSeam ? ' · Seam' : '')
+    const { details, content } = disclosure(title, key, { summary })
     details.classList.add('feature-card')
-    if (!duct) {
-      const options = element('div', 'fields feature-options')
-      options.append(
-        selectField(key + '.properties.side', 'Wall', SIDES.map((side) => [side, side]), properties.side),
-        selectField(key + '.properties.shape', 'Shape', SHAPES.map((shape) => [shape, shape]), properties.shape),
-      )
-      content.append(options)
-      if (enclosureType === 'split') {
-        const placement = element('div', 'feature-options')
-        placement.append(selectField(key + '.properties.placement', 'Placement',
-          Object.entries(CUTOUT_PLACEMENTS), properties.placement ?? 'height'))
-        content.append(placement)
-      }
+    const options = element('div', 'fields feature-options')
+    options.append(
+      selectField(key + '.properties.side', 'Wall', SIDES.map((side) => [side, side]), properties.side),
+      selectField(key + '.properties.shape', 'Shape', SHAPES.map((shape) => [shape, shape]), properties.shape),
+    )
+    content.append(options)
+    if (enclosureType === 'split') {
+      const placement = element('div', 'feature-options')
+      placement.append(selectField(key + '.properties.placement', 'Placement',
+        Object.entries(CUTOUT_PLACEMENTS), properties.placement ?? 'height'))
+      content.append(placement)
     }
     const issue = element('p', 'field-hint feature-issue')
     issue.hidden = true
     issue.setAttribute('role', 'status')
     issue.dataset.featureIssue = key
     content.append(issue)
-    const schema = featureFields(feature)
-    if (duct) {
-      const { x, y, angle, ...dimensions } = schema
-      const sizes = fields(dimensions, parameters, key + '.parameters')
-      const fits = Object.entries(CABLE_DUCT_FITS).map(([value, { label }]) => [value, label])
-      sizes.append(selectField(key + '.properties.fit', 'Push-in fit', fits, properties.fit))
-      const center = element('p', 'field-hint')
-      center.dataset.ductCenter = key + '.parameters'
-      center.hidden = true
-      const placement = element('fieldset', 'feature-placement')
-      placement.append(element('legend', 'field-hint', 'Placement'),
-        fields(CABLE_DUCT_PLACEMENT_FIELDS, parameters, key + '.parameters'))
-      content.append(sizes, center, placement)
-    } else {
-      content.append(fields(schema, parameters, key + '.parameters'))
-    }
+    content.append(fields(featureFields(feature), parameters, key + '.parameters'))
     if (atSeam) content.append(element('p', 'field-hint', 'Follows the lower half height and opens the lip at this cutout.'))
     const actions = element('div', 'feature-actions')
     const remove = button('Remove feature', 'trash', 'button button-quiet button-small', () => {
@@ -388,12 +370,6 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     })
     remove.setAttribute('aria-label', 'Remove ' + title.toLowerCase() + ' ' + (index + 1))
     actions.append(remove)
-    if (duct) {
-      const exportSTL = button('', 'download', 'icon-button', () => onExportSample(key))
-      exportSTL.setAttribute('aria-label', 'Export ' + title.toLowerCase() + ' ' + (index + 1) + ' as STL')
-      exportSTL.title = 'Export sample as STL'
-      actions.append(exportSTL)
-    }
     content.append(actions)
     return details
   }
@@ -454,6 +430,13 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     if (object.type === 'pcb-corner-mount') {
       const options = Object.entries(PCB_MOUNT_FASTENINGS).map(([key, { label }]) => [key, label])
       parameterPanel.content.append(selectField(path + '.properties.fastening', 'Fastening', options, object.properties.fastening))
+    }
+    if (object.type === 'cable-duct') {
+      const fits = Object.entries(CABLE_DUCT_FITS).map(([key, { label }]) => [key, label])
+      const center = element('p', 'field-hint')
+      center.dataset.ductCenter = ''
+      center.hidden = true
+      parameterPanel.content.append(selectField(path + '.properties.fit', 'Push-in fit', fits, object.properties.fit), center)
     }
     if (object.type === 'repeater') {
       const primitive = object.parameters.primitive
@@ -611,10 +594,22 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       report.textContent = [...new Set(messages)].join(' ')
       report.hidden = messages.length === 0
     }
-    for (const readout of selected.querySelectorAll('[data-duct-center]')) {
-      const prefix = readout.dataset.ductCenter + '.'
-      const value = (key) => evaluation.values.get(prefix + key)
-      const center = evaluation.values.get('root.parameters.floor') + value('baseHeight') + value('cableDiameter') / 2
+    const readout = selected.querySelector('[data-duct-center]')
+    if (readout) {
+      const { root, values } = evaluation
+      let center = values.get(path + '.parameters.baseHeight') + values.get(path + '.parameters.cableDiameter') / 2
+      let mount = path
+      while (mount !== 'root') {
+        center += values.get(mount + '.placement.z')
+        const parent = mount.slice(0, mount.lastIndexOf('.children.'))
+        if (parent === 'root') {
+          const { type, placement: { part } } = objectAt(getProject(), mount)
+          if (type === 'repeater') center -= BOOLEAN_OVERLAP
+          center = part === 'base' ? values.get('root.parameters.floor') + center
+            : root ? enclosureLayout(root).height - root.parameters.thickness - center : NaN
+        }
+        mount = parent
+      }
       readout.hidden = !Number.isFinite(center)
       readout.textContent = readout.hidden ? '' : 'Cable center sits ' + formatter.format(center) + ' mm above the enclosure bottom.'
     }
@@ -644,7 +639,10 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     const choice = event.target.closest('[data-child-type]')
     if (!choice || rowTarget?.popover !== childPicker) return
     const { object, key } = rowTarget
-    const child = makeChild(choice.dataset.childType, key === 'root')
+    const type = choice.dataset.childType
+    const direct = key === 'root'
+    const root = type === 'cable-duct' && direct ? getEvaluatedRoot() : undefined
+    const child = makeChild(type, direct, root)
     object.children.push(child)
     renderTree(true, child)
     renderSelected()
