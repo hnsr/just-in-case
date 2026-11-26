@@ -49,7 +49,7 @@ export const PCB_MOUNT_FASTENINGS = {
     label: 'Snap-fit',
     fields: {
       seatSize: mm('Corner seat size', 6, 5, 40),
-      clipOverhang: mm('Clip overhang', 0.35, 0.1, 1.5),
+      clipOverhang: mm('Clip overhang', 0.2, 0.1, 1.5),
     },
   },
 }

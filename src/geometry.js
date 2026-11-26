@@ -253,65 +253,45 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     const inside = -clearance
     const outside = inside - wallThickness
     const boardTop = baseHeight + boardThickness
-    const snap = fastening === 'snap-fit'
     const extrude = (outline, bottom, top) => move(
       trackSource(own(Manifold.extrude([outline], top - bottom)), path), [0, 0, bottom],
     )
 
-    function corner(flexible) {
-      // X and Y run inward from the nominal board corner.
-      const pad = extrude([[outside, outside], [seatX, outside], [seatX, seatY], [outside, seatY]],
-        -BOOLEAN_OVERLAP, baseHeight)
+    // X and Y run inward from the nominal board corner.
+    const pad = extrude([[outside, outside], [seatX, outside], [seatX, seatY], [outside, seatY]],
+      -BOOLEAN_OVERLAP, baseHeight)
+    const outline = [[outside, outside], [seatX, outside], [seatX, inside],
+      [inside, inside], [inside, seatY], [outside, seatY]]
+    const walls = extrude(outline, baseHeight - BOOLEAN_OVERLAP, boardTop)
+    let corner
+    if (fastening === 'screw') {
+      const { holeInsetX: x, holeInsetY: y, pilotDiameter } = parameters
+      const pilot = verticalCylinder({ x, y }, PCB_PILOT_MARGIN, baseHeight + BOOLEAN_OVERLAP, pilotDiameter / 2, path)
+      corner = subtract(union(pad, [walls]), [pilot])
+    } else {
+      const { clipOverhang } = parameters
       const clipWidth = Math.min(5, seatX * 0.55)
       const clipStart = seatX - clipWidth - 0.2
-      const slot = 0.6
-      const guideEnd = flexible ? clipStart - slot : seatX
-      const outline = [[outside, outside], [guideEnd, outside], [guideEnd, inside],
-        [inside, inside], [inside, seatY], [outside, seatY]]
-      const walls = extrude(outline, baseHeight - BOOLEAN_OVERLAP, boardTop)
-      if (!snap) {
-        const { holeInsetX: x, holeInsetY: y, pilotDiameter } = parameters
-        const pilot = verticalCylinder({ x, y }, PCB_PILOT_MARGIN, baseHeight + BOOLEAN_OVERLAP, pilotDiameter / 2, path)
-        return subtract(union(pad, [walls]), [pilot])
-      }
-
-      const { clipOverhang } = parameters
-      const anchor = Math.min(0.9, baseHeight / 2)
-      const clipBottom = (flexible ? anchor : baseHeight) - BOOLEAN_OVERLAP
-      // Inset the clip stem and ends slightly from the wall faces it joins.
-      const clipInside = inside - BOOLEAN_OVERLAP
-      const clipOutside = outside + BOOLEAN_OVERLAP
-      const armBack = flexible ? Math.max(clipOutside, clipInside - 1.1) : clipOutside
-      const rootBack = flexible ? Math.max(clipOutside, clipInside - 1.6) : clipOutside
+      const clipBottom = baseHeight - BOOLEAN_OVERLAP
       // Slope the catch underside for printing and bevel the top to guide the board in.
-      const rampStart = boardTop + 0.15 - Math.min(-clipInside, boardThickness)
-      const reach = clipOverhang - clipInside
+      const rampStart = boardTop + 0.15 - Math.min(clearance, boardThickness)
+      // Separate nearly coincident edges at the wall top before STL quantization.
+      const rampJoin = Math.abs(rampStart - boardTop) < 0.001 ? boardTop + 0.001 : rampStart
+      const reach = clipOverhang - inside
       const catchZ = rampStart + reach
       const clipTop = catchZ + 0.35 + reach
-      const section = [[rootBack, clipBottom], [clipInside, clipBottom], [clipInside, rampStart],
-        [clipOverhang, catchZ], [clipOverhang, catchZ + 0.35], [clipInside, clipTop], [armBack, clipTop]]
-      if (flexible) section.push([armBack, anchor + 0.6], [rootBack, anchor])
+      const section = [[outside, clipBottom], [inside, clipBottom], [inside, rampJoin],
+        [clipOverhang, catchZ], [clipOverhang, catchZ + 0.35], [inside, clipTop], [outside, clipTop]]
       const clip = move(rotate(trackSource(own(Manifold.extrude([section], clipWidth)), path), [90, 0, 90]),
         [clipStart, 0, 0])
-      if (!flexible) return union(pad, [walls, clip])
-
-      // Open the relief to the outer edge. The finger is free above the anchor
-      // and the rest of the seat still supports the underside of the board.
-      const left = clipStart - slot
-      const right = seatX + BOOLEAN_OVERLAP
-      const near = outside - BOOLEAN_OVERLAP
-      const far = inside + slot
-      const relief = extrude([[left, near], [right, near], [right, far], [left, far]], anchor, baseHeight + BOOLEAN_OVERLAP)
-      return union(subtract(pad, [relief]), [walls, clip])
+      corner = union(pad, [walls, clip])
     }
 
-    const rigid = corner(false)
-    const front = snap ? corner(true) : rigid
-    const back = own(rigid.mirror([0, 1, 0]))
+    const back = own(corner.mirror([0, 1, 0]))
     const x = boardWidth / 2
     const y = boardDepth / 2
     return own(Manifold.union([
-      move(front, [-x, -y, 0]), move(own(front.mirror([1, 0, 0])), [x, -y, 0]),
+      move(corner, [-x, -y, 0]), move(own(corner.mirror([1, 0, 0])), [x, -y, 0]),
       move(back, [-x, y, 0]), move(own(back.mirror([1, 0, 0])), [x, y, 0]),
     ]))
   }

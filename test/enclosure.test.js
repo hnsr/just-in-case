@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import { createCutterOutline } from '../src/cutter-outline.js'
 import { buildEnclosure, buildSample, initGeometry } from '../src/geometry.js'
 import { defaultProject, evaluateProject, evaluateSample, makeChild, newProject, parseProject, projectJSON, screwClosureDraftIssues } from '../src/project.js'
-import { LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, cornerFasteners, makePrimitive } from '../src/definitions.js'
+import { LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, PCB_MOUNT_FASTENINGS, cornerFasteners, fieldDefaults, makePrimitive } from '../src/definitions.js'
 import { enclosureSTL, sampleSTL } from '../src/stl.js'
 
 const geometry = await initGeometry()
@@ -68,7 +68,7 @@ function floorCutter() {
 function snapFitMount() {
   const mount = makeChild('pcb-corner-mount')
   mount.properties.fastening = 'snap-fit'
-  Object.assign(mount.parameters, { seatSize: 6, clipOverhang: 0.35 })
+  Object.assign(mount.parameters, fieldDefaults(PCB_MOUNT_FASTENINGS['snap-fit'].fields))
   return mount
 }
 
@@ -364,7 +364,7 @@ test('screw corner mounts locate both edges and keep four blind holes at the boa
   surface.material.dispose()
 })
 
-test('snap-fit corner samples have four seats, two fixed catches, and relief beside the flexible fingers', () => {
+test('snap-fit corner samples have four solid seats and catches flush with the walls', () => {
   const project = newProject()
   const mount = snapFitMount()
   project.root.children.push(mount)
@@ -376,16 +376,27 @@ test('snap-fit corner samples have four seats, two fixed catches, and relief bes
   const near = (actual, expected) => assert(Math.abs(actual - expected) < 0.001)
   for (const x of [-17, 17]) {
     for (const y of [-12, 12]) near(cast([x, y, 12], [0, 0, -1])[0].z, 6.05)
-    for (const y of [-14.8, 14.8]) near(cast([x, y, 6.1], [0, 0, 1])[0].z, 8)
+    for (const side of [-1, 1]) {
+      near(cast([x, side * 14.9, 6.1], [0, 0, 1])[0].z, 7.9)
+      near(cast([x, 0, 8.1], [0, side, 0])[0].y, side * 14.8)
+      for (const y of [15.21, 16.79]) near(cast([x, side * y, 12], [0, 0, -1])[0].z, 8.75)
+    }
   }
   for (const x of [-16, 16]) {
-    const section = cast([x, -18, 4], [0, 1, 0])
-    for (const y of [-16.35, -15.25, -14.6, 16.8]) assert(section.some((point) => Math.abs(point.y - y) < 0.001))
-    assert(!cast([Math.sign(x) * 17.8, -18, 7], [0, 1, 0]).some(({ y }) => y < -14))
+    const section = cast([x, -18, 4], [0, 1, 0]).map(({ y }) => Number(y.toFixed(3)))
+    assert.deepEqual([...new Set(section)], [-16.8, -9, 9, 16.8])
+    const guide = cast([Math.sign(x) * 17.8, -18, 7], [0, 1, 0])
+    near(guide[0].y, -16.8)
   }
   inspectSTL(sampleSTL(sample))
   surface.geometry.dispose()
   surface.material.dispose()
+
+  Object.assign(mount.parameters, { wallThickness: 2.4, clearance: 0.15 })
+  const wider = buildSample(geometry, evaluateSample(project, 'root.children.0'))
+  assert(hasVertex(wider.mesh, -17.5, -17.55, 8.7), 'the catch extends to the thicker wall’s outer edge')
+  assert(hasVertex(wider.mesh, -17.5, -15.15, 8.7), 'the catch starts at the wall’s inner edge')
+  inspectSTL(sampleSTL(wider))
 })
 
 test('PCB corner mount validation uses the selected mode and rejects intersecting seats or misplaced holes', () => {

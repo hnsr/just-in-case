@@ -21,6 +21,7 @@ const exportOptions = $('#export-options')
 const previewMessage = $('#preview-message')
 const bananaToggle = $('#banana-for-scale')
 const notices = $('#notice')
+const noticeText = $('#notice-text')
 const toast = $('#toast')
 const viewButtons = [...document.querySelectorAll('[data-view]')]
 const orientationButtons = [...document.querySelectorAll('[data-orientation]')]
@@ -53,7 +54,7 @@ let project = restoreProject()
 
 function showNotice(message) {
   notices.hidden = !message
-  $('#notice-text').textContent = message
+  if (noticeText.textContent !== message) noticeText.textContent = message
 }
 
 function status(message, state) {
@@ -162,7 +163,7 @@ function applyEvaluation(evaluation) {
   const { issues } = evaluation
   inspector.applyEvaluation(evaluation)
   nameInput.setAttribute('aria-invalid', String(issues.some(({ field }) => field === 'name')))
-  const messages = [...new Set(issues.map(({ message }) => message))]
+  const messages = [...new Set(issues.map(({ message, hint }) => hint ? message + ' ' + hint : message))]
   const tail = messages.length > 3 ? ' ' + (messages.length - 3) + ' more issues need attention.' : ''
   showNotice(messages.slice(0, 3).join(' ') + tail)
 }
@@ -291,7 +292,7 @@ bananaToggle.addEventListener('change', () => preview?.setBananaVisible(bananaTo
 initGeometry(wasmURL).then((module) => {
   geometry = module
   clearTimeout(modelTimer)
-  const previousNotice = !notices.hidden ? $('#notice-text').textContent : ''
+  const previousNotice = !notices.hidden ? noticeText.textContent : ''
   updateModel()
   if (previousNotice && notices.hidden) showNotice(previousNotice)
 }).catch(() => {

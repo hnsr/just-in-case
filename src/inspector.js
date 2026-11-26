@@ -354,11 +354,6 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
         Object.entries(CUTOUT_PLACEMENTS), properties.placement ?? 'height'))
       content.append(placement)
     }
-    const issue = element('p', 'field-hint feature-issue')
-    issue.hidden = true
-    issue.setAttribute('role', 'status')
-    issue.dataset.featureIssue = key
-    content.append(issue)
     content.append(fields(featureFields(feature), parameters, key + '.parameters'))
     if (atSeam) content.append(element('p', 'field-hint', 'Follows the lower half height and opens the lip at this cutout.'))
     const actions = element('div', 'feature-actions')
@@ -457,17 +452,13 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     if (object.type === 'pcb-corner-mount') {
       const hint = object.properties.fastening === 'screw'
         ? 'Measure insets from the PCB edges to the hole centers. Base height sets the board’s underside.'
-        : 'Tuck the board under the fixed catches first, then press it down into the flexing clips.'
+        : 'Tuck one edge of the board under two catches, then press the opposite edge down.'
       parameterPanel.content.append(element('p', 'field-hint', hint))
     }
     selected.append(parameterPanel.details)
     if (object.type === 'screw-fastened') {
       const screws = disclosure('Screw closure', path + '.screws', { glyph: 'bolt', open: true })
-      const issue = element('p', 'field-hint feature-issue')
-      issue.hidden = true
-      issue.setAttribute('role', 'status')
-      issue.dataset.screwIssues = ''
-      screws.content.append(issue, fields(SCREW_FIELDS, object.parameters, path + '.parameters'),
+      screws.content.append(fields(SCREW_FIELDS, object.parameters, path + '.parameters'),
         element('p', 'field-hint', 'Two diagonal collars align the lid. Set counterbore depth to 0 for plain lid holes.'))
       selected.append(screws.details)
     }
@@ -483,10 +474,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       const hint = depth === 1
         ? 'X and Y start at the surface center. Z points into the case, along the print orientation of that part.'
         : 'Offsets and rotation are relative to the parent object’s origin.'
-      const issue = element('p', 'field-hint placement-issue')
-      issue.hidden = true
-      issue.setAttribute('role', 'status')
-      placement.content.append(fields(PLACEMENT_FIELDS, object.placement, path + '.placement'), issue, element('p', 'field-hint', hint))
+      placement.content.append(fields(PLACEMENT_FIELDS, object.placement, path + '.placement'), element('p', 'field-hint', hint))
       selected.append(placement.details)
     }
 
@@ -581,19 +569,6 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       const key = details.dataset.section
       details.classList.toggle('has-issue', errors.has(key) || evaluation.issues.some(({ field }) => field.startsWith(key + '.')))
     }
-    const placementIssue = selected.querySelector('.placement-issue')
-    if (placementIssue) {
-      const hint = errors.get(path + '.placement')?.hint
-      placementIssue.textContent = hint ?? ''
-      placementIssue.hidden = !hint
-    }
-    for (const report of selected.querySelectorAll('[data-feature-issue]')) {
-      const key = report.dataset.featureIssue
-      const messages = evaluation.issues.filter(({ field }) => field === key || field.startsWith(key + '.'))
-        .map(({ message }) => message)
-      report.textContent = [...new Set(messages)].join(' ')
-      report.hidden = messages.length === 0
-    }
     const readout = selected.querySelector('[data-duct-center]')
     if (readout) {
       const { root, values } = evaluation
@@ -613,13 +588,8 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       readout.hidden = !Number.isFinite(center)
       readout.textContent = readout.hidden ? '' : 'Cable center sits ' + formatter.format(center) + ' mm above the enclosure bottom.'
     }
-    const screwReport = selected.querySelector('[data-screw-issues]')
-    if (screwReport) {
-      const messages = evaluation.issues.filter(({ field }) => isScrewParameter(field)).map(({ message }) => message)
-      screwReport.textContent = [...new Set(messages)].join(' ')
-      screwReport.hidden = messages.length === 0
-      screwReport.closest('details').classList.toggle('has-issue', messages.length > 0)
-    }
+    selected.querySelector('[data-section="root.screws"]')?.classList.toggle('has-issue',
+      evaluation.issues.some(({ field }) => isScrewParameter(field)))
     const variableError = evaluation.issues.some(({ field }) => field.startsWith('variables.'))
     variablesToggle.classList.toggle('has-issue', variableError)
     if (variableError) variablesToggle.setAttribute('aria-description', 'Some variables need attention.')

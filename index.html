@@ -88,11 +88,6 @@
         <div class="save-status" id="save-status" role="status"><span data-icon="drive"></span><span id="save-status-text">Starting editor…</span></div>
       </div>
 
-      <div id="notice" class="notice" hidden>
-        <span data-icon="alert"></span>
-        <span id="notice-text" role="status"></span>
-      </div>
-
       <div class="workbench">
         <section class="panel parameters" aria-labelledby="objects-title">
           <div class="panel-header parameter-header">
@@ -145,6 +140,10 @@
             <span id="grid-spacing" class="viewport-label grid-spacing" hidden></span>
             <span id="pan-hint" class="viewport-label pan-hint" hidden>Press Esc to reset pan</span>
             <div id="preview-message" class="preview-message" role="status">Preparing the 3D preview…</div>
+            <div id="notice" class="viewport-notice" hidden>
+              <span data-icon="alert" aria-hidden="true"></span>
+              <span id="notice-text" role="status"></span>
+            </div>
           </div>
           <footer class="preview-footer">
             <div class="size-readout" title="Assembled width × depth × height">
