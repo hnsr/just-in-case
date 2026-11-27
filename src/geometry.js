@@ -628,14 +628,41 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     })))
   }
 
+  function mountingFitSample(part) {
+    const base = part === 'base'
+    const thickness = base ? p.floor : p.thickness
+    const availableHeight = layout.height - (base ? (layout.hasUpper ? p.thickness : 0) : p.floor)
+    const { adds, cuts } = childGroups(root.children, 'root', { part, surface: thickness, availableHeight })
+    const slab = prism(0, thickness)
+    // Keep the whole footprint of the attachments. With cuts alone, use only the areas they reach on the slab.
+    const targets = adds.length ? adds : cuts.map((cut) => own(slab.intersect(cut))).filter((cut) => !cut.isEmpty())
+    if (!targets.length) throw new Error('No cut reaches this mounting surface.')
+    const bounds = targets.map((target) => target.boundingBox())
+    const margin = 3
+    const low = [0, 1].map((axis) => Math.min(...bounds.map(({ min }) => min[axis])) - margin)
+    const high = [0, 1].map((axis) => Math.max(...bounds.map(({ max }) => max[axis])) + margin)
+    const crop = box([high[0] - low[0], high[1] - low[1], thickness + 2 * BOOLEAN_OVERLAP],
+      [(low[0] + high[0]) / 2, (low[1] + high[1]) / 2, thickness / 2])
+    const patch = own(slab.intersect(crop))
+    if (root.type === 'screw-fastened') {
+      const { pilots, lidHoles } = screwClosure()
+      cuts.push(...(base ? pilots : lidHoles))
+    }
+    return subtract(union(patch, adds), cuts)
+  }
+
   try {
     if (sample) {
       const solid = sample.cutout ? wallFitSample(sample.cutout)
-        : rotate(childGeometry(sample.object, 'sample', { surface: 0 }).solid, [0, 0, sample.ancestorAngle])
+        : sample.mountingPart ? mountingFitSample(sample.mountingPart)
+          : rotate(childGeometry(sample.object, 'sample', { surface: 0 }).solid, [0, 0, sample.ancestorAngle])
       if (solid.status() !== 'NoError' || solid.isEmpty()) throw new Error('The sample has no usable solid geometry.')
       const { min, max } = solid.boundingBox()
-      const floatingPieces = solid.decompose().map(own)
-        .filter((piece) => piece.boundingBox().min[2] > min[2] + 0.001 && piece.volume() > 0).length
+      const pieces = solid.decompose().map(own)
+      if (sample.mountingPart && pieces.length !== 1) {
+        throw new Error('The mounting sample would print in separate pieces. Check that objects join the floor or ceiling and that cuts leave the patch connected.')
+      }
+      const floatingPieces = pieces.filter((piece) => piece.boundingBox().min[2] > min[2] + 0.001 && piece.volume() > 0).length
       const onBed = move(solid, [-(min[0] + max[0]) / 2, -(min[1] + max[1]) / 2, -min[2]])
       return { mesh: mesh(onBed, 'sample'), floatingPieces }
     }

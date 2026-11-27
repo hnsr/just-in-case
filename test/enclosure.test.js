@@ -360,6 +360,96 @@ test('split seam fit samples pack both print-oriented wall pieces with the real 
   surface.material.dispose()
 })
 
+test('a base mounting sample preserves attached branches and crops the floor around them', () => {
+  const project = newProject()
+  project.root.parameters.floor = 3
+  const left = makeChild('repeater')
+  const right = makeChild('repeater')
+  const raised = makeChild('repeater', false)
+  Object.assign(left.placement, { x: -12, y: -2, angle: 90 })
+  Object.assign(left.parameters.primitive.parameters, { width: 8, depth: 4, height: 5 })
+  Object.assign(right.placement, { x: 11, y: 3 })
+  Object.assign(right.parameters.primitive.parameters, { width: 6, depth: 4, height: 7 })
+  Object.assign(raised.placement, { x: 2, z: 4 })
+  Object.assign(raised.parameters.primitive.parameters, { width: 2, depth: 2, height: 2 })
+  left.children.push(raised)
+  const hole = floorCutter()
+  hole.placement.x = 0
+  project.root.children.push(left, right, hole)
+  const path = 'root.mounting.base'
+  const original = parseProject(projectJSON(project))
+  const sample = buildSample(geometry, evaluateSample(original, path))
+  const stl = inspectSTL(sampleSTL(sample))
+  assert.deepEqual(stl.min, [-17, -8.5, 0])
+  assert.deepEqual(stl.max, [17, 8.5, 9.95])
+  assert.equal(sample.floatingPieces, 0)
+  const surface = raycastSurface(sample.mesh)
+  const down = new THREE.Vector3(0, 0, -1)
+  const zAt = (x, y) => new THREE.Raycaster(new THREE.Vector3(x, y + 0.5, 20), down)
+    .intersectObject(surface)[0]?.point.z
+  assert(Math.abs(zAt(-12, -5) - 7.95) < 0.001, 'the left block keeps its rotation')
+  assert(Math.abs(zAt(-12, 0) - 8.95) < 0.001, 'the nested block keeps its relative height')
+  assert(Math.abs(zAt(11, 3) - 9.95) < 0.001, 'the right block keeps its spacing')
+  assert(Math.abs(zAt(4, 0) - 3) < 0.001, 'the patch keeps the floor thickness')
+  assert.equal(zAt(0, 0), undefined, 'the cut goes through the patch')
+  surface.geometry.dispose()
+  surface.material.dispose()
+
+  const outsideCut = floorCutter()
+  outsideCut.placement.x = 40
+  const otherSide = makeChild('repeater')
+  Object.assign(otherSide.placement, { part: 'upper', x: 'missing' })
+  const reference = makeChild('repeater')
+  reference.properties.reference = true
+  reference.placement.x = 'missing'
+  project.root.children.push(outsideCut, otherSide, reference)
+  const edited = inspectSTL(sampleSTL(buildSample(geometry, evaluateSample(project, path))))
+  assert.deepEqual(edited.min, stl.min)
+  assert.deepEqual(edited.max, stl.max)
+  assert(Math.abs(edited.volume - stl.volume) < 0.001)
+  assert.throws(() => evaluateSample(project, 'root.mounting.upper'), /Unknown variable/)
+})
+
+test('a lid mounting sample uses the lid print frame and retains screw holes within the patch', () => {
+  const project = newProject('screw-fastened')
+  const { thickness } = project.root.parameters
+  const { positions } = cornerFasteners(project.root.parameters)
+  for (const [x, y] of [[-40, -23], [40, 23]]) {
+    const block = makeChild('repeater')
+    Object.assign(block.placement, { part: 'upper', x, y })
+    Object.assign(block.parameters.primitive.parameters, { width: 10, depth: 7, height: x > 0 ? 6 : 4 })
+    project.root.children.push(block)
+  }
+  const sample = buildSample(geometry, evaluateSample(project, 'root.mounting.upper'))
+  assert.deepEqual(inspectSTL(sampleSTL(sample)).max, [48, 29.5, 8.95])
+  const surface = raycastSurface(sample.mesh)
+  const down = new THREE.Vector3(0, 0, -1)
+  const zAt = (x, y) => new THREE.Raycaster(new THREE.Vector3(x, y, 20), down).intersectObject(surface)[0]?.point.z
+  assert(Math.abs(zAt(-40, -23) - thickness - 3.95) < 0.001)
+  assert(Math.abs(zAt(40, 23) - thickness - 5.95) < 0.001)
+  assert(Math.abs(zAt(-40, 23) - thickness) < 0.001)
+  for (const { x, y } of positions) assert.equal(zAt(x, -Math.sign(y) * 29), undefined)
+  surface.geometry.dispose()
+  surface.material.dispose()
+})
+
+test('cuts can define a mounting sample and the patch must remain connected', () => {
+  const project = newProject('lidded', false)
+  const path = 'root.mounting.base'
+  const sample = () => buildSample(geometry, evaluateSample(project, path))
+  assert.throws(sample, /Add a printable object or cut/)
+  assert.throws(() => evaluateSample(project, 'root.mounting.upper'), /no upper mounting surface/)
+  const hole = floorCutter()
+  project.root.children.push(hole)
+  assert.deepEqual(inspectSTL(sampleSTL(sample())).max, [5.5, 5.5, 2.4])
+  hole.placement.z = 1
+  assert.throws(sample, /No cut reaches/)
+  const floating = makeChild('repeater')
+  floating.placement.z = 1
+  project.root.children.push(floating)
+  assert.throws(sample, /print in separate pieces/)
+})
+
 test('cable duct fit presets adjust the sample grip and the opening under the lip', () => {
   const project = newProject()
   const duct = makeChild('cable-duct')

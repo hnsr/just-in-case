@@ -138,6 +138,8 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
   const selected = $('#object-inspector')
   const childPicker = $('#child-picker')
   const objectActions = $('#object-actions')
+  const enclosureActions = $('#enclosure-actions')
+  const toolbarExport = $('#export-button')
   const exportAction = objectActions.querySelector('[data-object-action="export"]')
   const removeDialog = $('#remove-object-dialog')
   const variablesPanel = $('#variables-panel')
@@ -196,7 +198,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     trigger.focus({ preventScroll: true })
     popover.showPopover({ source: trigger })
     positionRowPopover()
-    popover.querySelector('button:not([hidden])')?.focus({ preventScroll: true })
+    popover.querySelector('button:enabled:not([hidden])')?.focus({ preventScroll: true })
   }
 
   function requestRemoval(object, key, parent) {
@@ -281,19 +283,22 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       add.disabled = limitReached || depth >= MAX_DEPTH
       add.title = add.disabled ? 'Object or nesting limit reached' : 'Add child object'
       actions.append(add)
-      if (parent) {
-        const more = button('', 'more', 'icon-button tree-action', (event) => {
-          exportAction.hidden = !additive
-          $('#object-actions-title').textContent = label
-          openRowPopover(objectActions, event.currentTarget, { object, key, parent })
-        })
-        more.setAttribute('aria-label', 'More actions for ' + label)
-        more.setAttribute('aria-controls', objectActions.id)
-        more.setAttribute('aria-haspopup', 'dialog')
-        more.setAttribute('aria-expanded', 'false')
-        more.title = 'More actions'
-        actions.append(more)
+      const actionPopover = parent ? objectActions : enclosureActions
+      const more = button('', 'more', 'icon-button tree-action', (event) => {
+        if (parent) exportAction.hidden = !additive
+        actionPopover.querySelector('p').textContent = label
+        openRowPopover(actionPopover, event.currentTarget, { object, key, parent })
+      })
+      more.setAttribute('aria-label', 'More actions for ' + label)
+      more.setAttribute('aria-controls', actionPopover.id)
+      more.setAttribute('aria-haspopup', 'dialog')
+      more.setAttribute('aria-expanded', 'false')
+      more.title = 'More actions'
+      if (!parent) {
+        more.id = 'enclosure-export-trigger'
+        more.disabled = toolbarExport.disabled
       }
+      actions.append(more)
       row.append(choose, eye, actions)
 
       const item = element('li')
@@ -600,7 +605,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
   }
 
   selected.addEventListener('input', handleInput)
-  for (const popover of [childPicker, objectActions]) {
+  for (const popover of [childPicker, objectActions, enclosureActions]) {
     popover.addEventListener('beforetoggle', (event) => {
       if (event.newState === 'closed' && rowTarget?.popover === popover) {
         rowTarget.trigger.setAttribute('aria-expanded', 'false')

@@ -3,6 +3,7 @@ import '@fontsource-variable/space-grotesk'
 import './styles.css'
 import wasmURL from 'manifold-3d/manifold.wasm?url'
 import { initAppearance } from './appearance.js'
+import { enclosureLayout } from './definitions.js'
 import { initGeometry, buildEnclosure, buildSample } from './geometry.js'
 import { addIcons } from './icons.js'
 import { createInspector } from './inspector.js'
@@ -18,6 +19,17 @@ const fileInput = $('#project-file')
 const saveButton = $('#save-project')
 const exportButton = $('#export-button')
 const exportOptions = $('#export-options')
+const enclosureActions = $('#enclosure-actions')
+enclosureActions.append(...Array.from(exportOptions.children, (option) => {
+  const action = option.cloneNode(false)
+  const icon = document.createElement('span')
+  icon.dataset.icon = 'download'
+  action.append(icon, document.createElement('span'))
+  return action
+}))
+const exportMenus = [exportOptions, enclosureActions]
+const wholePartExports = exportMenus.flatMap((menu) => [...menu.querySelectorAll('[data-export]')])
+const mountingExports = exportMenus.flatMap((menu) => [...menu.querySelectorAll('[data-mounting-sample]')])
 const previewMessage = $('#preview-message')
 const bananaToggle = $('#banana-for-scale')
 const notices = $('#notice')
@@ -71,10 +83,38 @@ function notify(message, warning = false) {
   toastTimer = setTimeout(() => { toast.hidden = true }, warning ? 8000 : 3200)
 }
 
+function setExportLabel(option, label) {
+  option.dataset.label = label
+  if (enclosureActions.contains(option)) {
+    option.lastElementChild.textContent = 'Export ' + label.toLowerCase()
+  } else {
+    option.querySelector('strong').textContent = label
+  }
+}
+
 function setReady(ready) {
   saveButton.disabled = !ready
-  exportButton.disabled = !ready
-  if (!ready && exportOptions.matches(':popover-open')) exportOptions.hidePopover()
+  const { hasUpper, baseLabel, upperLabel } = enclosureLayout(project.root)
+  const partLabels = { base: baseLabel, upper: upperLabel, both: upperLabel === 'Lid' ? 'Base and lid' : 'Both halves' }
+  for (const option of wholePartExports) {
+    const part = option.dataset.export
+    option.disabled = !ready
+    option.hidden = part !== 'base' && !hasUpper
+    setExportLabel(option, partLabels[part])
+  }
+  for (const option of mountingExports) {
+    const part = option.dataset.mountingSample
+    setExportLabel(option, partLabels[part] + ' mounting sample')
+    option.hidden = (part === 'upper' && !hasUpper) || !project.root.children.some((child) =>
+      child.placement.part === part && child.properties.reference !== true)
+  }
+  exportButton.disabled = !ready && (!geometry || mountingExports.every((option) => option.hidden))
+  $('#enclosure-export-trigger').disabled = exportButton.disabled
+  if (exportButton.disabled) {
+    for (const menu of exportMenus) {
+      if (menu.matches(':popover-open')) menu.hidePopover()
+    }
+  }
 }
 
 function saveLocally() {
@@ -100,11 +140,6 @@ function setPartOptions({ hasUpper, baseLabel, upperLabel }) {
   $('[data-view="base"]').textContent = baseLabel
   $('[data-view="upper"]').textContent = upperLabel
   for (const button of viewButtons) button.hidden = !hasUpper && button.dataset.view !== 'base'
-  $('[data-export="base"] strong').textContent = baseLabel
-  $('[data-export="upper"] strong').textContent = upperLabel
-  $('[data-export="both"] strong').textContent = upperLabel === 'Lid' ? 'Base and lid' : 'Both halves'
-  $('[data-export="upper"]').hidden = !hasUpper
-  $('[data-export="both"]').hidden = !hasUpper
   setView(hasUpper ? viewMode : 'base')
 }
 
@@ -291,6 +326,7 @@ bananaToggle.addEventListener('change', () => preview?.setBananaVisible(bananaTo
 
 initGeometry(wasmURL).then((module) => {
   geometry = module
+  setReady(false)
   clearTimeout(modelTimer)
   const previousNotice = !notices.hidden ? noticeText.textContent : ''
   updateModel()
@@ -328,17 +364,23 @@ saveButton.addEventListener('click', () => {
   notify('Project JSON downloaded')
 })
 
-exportOptions.addEventListener('click', (event) => {
-  const option = event.target.closest('[data-export]')
-  if (!option || exportButton.disabled) return
-  const part = option.dataset.export
-  const label = option.querySelector('strong').textContent
+function exportEnclosure(event) {
+  const menu = event.currentTarget
+  const option = event.target.closest('button')
+  if (!option || option.disabled || option.hidden || exportButton.disabled) return
+  menu.hidePopover()
+  if (option.dataset.mountingSample) {
+    downloadSample('root.mounting.' + option.dataset.mountingSample)
+    return
+  }
+  const { export: part, label } = option.dataset
   const suffix = part === 'both' ? part : label.toLowerCase().replaceAll(' ', '-')
   const contents = enclosureSTL(currentModel, part)
   download(contents, projectFilename() + '-' + suffix + '.stl', 'model/stl')
-  exportOptions.hidePopover()
   notify(label + ' STL downloaded')
-})
+}
+
+for (const menu of exportMenus) menu.addEventListener('click', exportEnclosure)
 
 for (const button of viewButtons) button.addEventListener('click', () => setView(button.dataset.view))
 for (const button of orientationButtons) {

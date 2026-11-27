@@ -140,7 +140,7 @@ svg { display: block; width: 1.12rem; height: 1.12rem; flex: none; }
 .export-options { position: fixed; inset: 62px 24px auto auto; width: min(250px, calc(100vw - 24px)); margin: 0; padding: 0.3rem; border: 1px solid var(--floating-line); border-radius: 10px; background: var(--surface); color: var(--text); box-shadow: 0 12px 32px var(--floating-shadow); }
 @supports (top: anchor(bottom)) {
   #export-button { anchor-name: --export; }
-  .export-options { position-anchor: --export; inset: auto; top: calc(anchor(bottom) + 8px); right: anchor(right); }
+  #export-options { position-anchor: --export; inset: auto; top: calc(anchor(bottom) + 8px); right: anchor(right); }
 }
 .export-options button { display: grid; gap: 0.15rem; width: 100%; padding: 0.65rem 0.72rem; border: 0; border-radius: 6px; text-align: left; background: transparent; color: var(--text); }
 .export-options button:hover { background: var(--hover); }

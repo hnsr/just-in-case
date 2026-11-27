@@ -219,7 +219,7 @@ export function evaluateProject(project) {
 }
 
 export function evaluateSample(project, path) {
-  demand(typeof path === 'string', 'Choose a feature or object to export a sample.')
+  demand(typeof path === 'string', 'Choose a feature, object, or mounting surface to export a sample.')
   const { sample, issues } = evaluate(project, path)
   if (issues.length) throw new Error(issues[0].message)
   return sample
@@ -355,18 +355,41 @@ function evaluate(project, samplePath) {
     return next
   }
 
+  function sampleRoot(includeScrewFields) {
+    const source = project.root
+    demand(record(source) && Object.hasOwn(ROOT_TYPES, source.type) && record(source.properties),
+      'Choose an enclosure type as the project root.')
+    const { type, properties } = source
+    if (type === 'lidded') demand(typeof properties.includeLid === 'boolean', 'Choose whether the enclosure has a lid.')
+    const schema = Object.fromEntries(Object.entries(parameterFields(source))
+      .filter(([key]) => includeScrewFields || !Object.hasOwn(SCREW_FIELDS, key)))
+    return { type, properties, parameters: fields(source.parameters, schema, 'root.parameters') }
+  }
+
   function prepareSample(path) {
+    const mountingPart = /^root\.mounting\.(base|upper)$/.exec(path)?.[1]
+    if (mountingPart) {
+      const root = sampleRoot(true)
+      const { hasUpper, baseLabel, upperLabel } = enclosureLayout(root)
+      demand(mountingPart === 'base' || hasUpper, 'This enclosure has no upper mounting surface.')
+      // Wall cutouts are above the floor and below the ceiling. Surface cuts come from child branches and fasteners.
+      root.features = []
+      validateRoot(root, mark)
+      const { children } = project.root
+      demand(Array.isArray(children) && children.length < MAX_OBJECTS, 'The enclosure contains too many children or is missing its object list.')
+      root.children = children.flatMap((child, index) => {
+        if (child?.placement?.part !== mountingPart || child.properties?.reference === true) return []
+        return [visit(child, 'root.children.' + index, 1, hasUpper)]
+      })
+      demand(root.children.length > 0, 'Add a printable object or cut to this mounting surface first.')
+      const label = (mountingPart === 'base' ? baseLabel : upperLabel) + ' mounting'
+      return { root, mountingPart, label }
+    }
     if (/^root\.features\.\d+$/.test(path)) {
-      const source = project.root
       const index = Number(path.split('.').at(-1))
-      const feature = source?.features?.[index]
+      const feature = project.root?.features?.[index]
       demand(feature?.type === 'cutout', 'Choose a wall cutout to export a fit sample.')
-      demand(record(source) && Object.hasOwn(ROOT_TYPES, source.type) && record(source.properties),
-        'Choose an enclosure type as the project root.')
-      const { type, properties } = source
-      if (type === 'lidded') demand(typeof properties.includeLid === 'boolean', 'Choose whether the enclosure has a lid.')
-      const schema = Object.fromEntries(Object.entries(parameterFields(source)).filter(([key]) => !Object.hasOwn(SCREW_FIELDS, key)))
-      const root = { type, properties, parameters: fields(source.parameters, schema, 'root.parameters') }
+      const root = sampleRoot(false)
       const cutout = visitFeature(feature, path, root)
       validateEnclosureShell(root, mark)
       validateWallCutout(root, cutout, index, mark)

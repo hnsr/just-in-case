@@ -57,6 +57,8 @@
               <button type="button" data-export="base"><strong>Base</strong><small>Open side facing up</small></button>
               <button type="button" data-export="upper"><strong>Lid</strong><small>Outside face on the print bed</small></button>
               <button type="button" data-export="both"><strong>Base and lid</strong><small>One STL with parts side by side</small></button>
+              <button type="button" data-mounting-sample="base" hidden><strong>Base mounting sample</strong><small>Attached objects on a trimmed floor</small></button>
+              <button type="button" data-mounting-sample="upper" hidden><strong>Lid mounting sample</strong><small>Attached objects on a trimmed ceiling</small></button>
             </div>
           </div>
           <button id="settings-toggle" class="icon-button" type="button" popovertarget="settings-panel" aria-haspopup="dialog" aria-label="Settings" title="Settings">
@@ -105,6 +107,9 @@
             <p id="object-actions-title">Object actions</p>
             <button type="button" data-object-action="export"><span data-icon="download"></span>Export STL</button>
             <button type="button" data-object-action="remove"><span data-icon="trash"></span>Remove object</button>
+          </div>
+          <div id="enclosure-actions" class="tree-popover" popover role="dialog" aria-labelledby="enclosure-actions-title">
+            <p id="enclosure-actions-title">Enclosure actions</p>
           </div>
           <div id="object-inspector"></div>
           <div class="parameter-footer">

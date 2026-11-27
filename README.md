@@ -29,7 +29,8 @@ Use **Change enclosure** to choose a lidded, base-only, screw-fastened, or split
 - In a Geometry object's **Properties**, check **Reference only** to preview the branch as translucent shapes. References can float or overlap the enclosure and stay out of the STL. Use the eye next to any object to hide or show its branch in the preview.
 - Use **Top**, **Front**, or **Side** to check alignment in a fixed, translucent view. Pair any of these with **Assembled** to see where the base and lid line up.
 - **Child placement** starts at the center of the chosen part’s interior floor or ceiling. X, Y, and Z follow that part’s print orientation. Nested children use the position and rotation of their parent.
-- **Export STL** downloads either part or both parts side by side with an 8 mm gap. Each part exports with its outside face on the print bed.
+- **Export STL** downloads either part or both parts side by side with an 8 mm gap. Each part exports with its outside face on the print bed. The same options are in the enclosure row’s **More actions** menu.
+- Choose a **mounting sample** in the **Export STL** menu to print the objects attached to that floor or ceiling together on a cropped patch at the original thickness. The sample preserves their spacing and includes cuts through the patch.
 - To print a fit sample, choose **Export STL** from an additive object's **More actions** menu. An object sample includes its descendants and their cuts, excluding reference geometry. The sample keeps its print orientation and rests on the print bed at its lowest point.
 - Choose **Export fit sample** on a wall cutout card to print the opening and a short section of wall around it. The sample includes the floor or ceiling when close to the opening. Cutouts spanning the split seam export two pieces side by side with the mating lip.
 
