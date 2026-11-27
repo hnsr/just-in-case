@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import { createCutterOutline } from '../src/cutter-outline.js'
 import { buildEnclosure, buildSample, initGeometry } from '../src/geometry.js'
 import { defaultProject, evaluateProject, evaluateSample, makeChild, newProject, parseProject, projectJSON, screwClosureDraftIssues } from '../src/project.js'
-import { LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, PCB_MOUNT_FASTENINGS, cornerFasteners, fieldDefaults, makePrimitive } from '../src/definitions.js'
+import { LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, PCB_MOUNT_FASTENINGS, cornerFasteners, fieldDefaults, makePrimitive } from '../src/definitions.js'
 import { enclosureSTL, sampleSTL } from '../src/stl.js'
 
 const geometry = await initGeometry()
@@ -607,7 +607,7 @@ test('PCB corner mount validation uses the selected mode and rejects intersectin
   assert.deepEqual(evaluateProject(project).issues, [])
 })
 
-test('the screw-fastened enclosure has a flat lid and four integral corner bosses with matching holes', () => {
+test('the screw-fastened enclosure has four integral bosses and two round locator recesses', () => {
   const project = newProject('screw-fastened', false)
   const p = project.root.parameters
   const { positions, x, y, collarRadius, recessRadius } = cornerFasteners(p)
@@ -650,17 +650,27 @@ test('the screw-fastened enclosure has a flat lid and four integral corner bosse
   const across = new THREE.Vector3(-along.y, along.x, 0)
   for (const index of [0, 2]) {
     const position = positions[index]
-    for (const [axis, limit] of [[along, recessRadius + (index === 2 ? LOCATOR_SLOT_TRAVEL : 0)], [across, recessRadius]]) {
+    for (const axis of [along, across]) {
       const start = new THREE.Vector3(position.x, -position.y, p.thickness - LOCATOR_RECESS_DEPTH / 2)
         .addScaledVector(axis, 3.8)
       const [edge] = cast(start.toArray(), axis.clone().negate(), lidSurface)
-      assert(Math.abs(3.8 - edge.distance - limit) < 0.005)
+      assert(Math.abs(3.8 - edge.distance - recessRadius) < 0.005)
     }
   }
   baseSurface.geometry.dispose()
   baseSurface.material.dispose()
   lidSurface.geometry.dispose()
   lidSurface.material.dispose()
+})
+
+test('zero locator clearance round-trips and exports a screw-fastened enclosure', () => {
+  const project = newProject('screw-fastened')
+  project.root.parameters.locatorClearance = 0
+  const restored = parseProject(projectJSON(project))
+  assert.equal(restored.root.parameters.locatorClearance, 0)
+  const { collarRadius, recessRadius } = cornerFasteners(restored.root.parameters)
+  assert.equal(recessRadius, collarRadius)
+  inspectSTL(enclosureSTL(build(restored), 'both'))
 })
 
 test('a counterbore leaves solid lid thickness above the locating recess', () => {

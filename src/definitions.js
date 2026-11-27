@@ -28,12 +28,12 @@ export const SCREW_FIELDS = {
   clearanceDiameter: mm('Lid hole diameter', 3.4, 0.8, 16),
   counterboreDepth: mm('Counterbore depth', 0, 0, 12),
   counterboreDiameter: mm('Counterbore diameter', 6.2, 2, 30),
-  locatorClearance: mm('Locator clearance per side', 0.25, 0.1, 1),
+  locatorClearance: mm('Locator clearance per side', 0.25, 0, 1),
 }
 
 export const LOCATOR_HEIGHT = 0.8
 export const LOCATOR_RECESS_DEPTH = 1
-export const LOCATOR_SLOT_TRAVEL = 0.5
+const LOCATOR_SETBACK_ALLOWANCE = 0.5
 export const BOOLEAN_OVERLAP = 0.05
 
 export const PCB_MOUNT_FASTENINGS = {
@@ -162,7 +162,8 @@ export function cornerFasteners(p) {
   const collarRadius = p.clearanceDiameter / 2 + 1
   const recessRadius = collarRadius + p.locatorClearance
   const headRadius = p.counterboreDepth > 0 ? p.counterboreDiameter / 2 : 0
-  const envelopeRadius = Math.max(bossRadius || 0, (recessRadius + LOCATOR_SLOT_TRAVEL) || 0, headRadius || 0)
+  // Keep the original corner setback so replacement lids still line up with printed bases.
+  const envelopeRadius = Math.max(bossRadius || 0, (recessRadius + LOCATOR_SETBACK_ALLOWANCE) || 0, headRadius || 0)
   const edgeRoom = envelopeRadius + 0.7
   // Equal X/Y insets keep the same edge room at a rounded corner.
   const inset = Math.max(p.wall + 0.5, edgeRoom, p.radius + (edgeRoom - p.radius) / Math.SQRT2)

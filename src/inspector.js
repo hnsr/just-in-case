@@ -467,7 +467,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     if (object.type === 'screw-fastened') {
       const screws = disclosure('Screw closure', path + '.screws', { glyph: 'bolt', open: true })
       screws.content.append(fields(SCREW_FIELDS, object.parameters, path + '.parameters'),
-        element('p', 'field-hint', 'Two diagonal collars align the lid. Set counterbore depth to 0 for plain lid holes.'))
+        element('p', 'field-hint', 'Two round recesses fit the diagonal locating collars. Set counterbore depth to 0 for plain lid holes.'))
       selected.append(screws.details)
     }
 

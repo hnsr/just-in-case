@@ -2,7 +2,7 @@ import createManifold from 'manifold-3d'
 import {
   BOOLEAN_OVERLAP, CABLE_DUCT_FLARE, CABLE_DUCT_RAIL, cableDuctProfile,
   PCB_PILOT_MARGIN, pcbSeatSize,
-  LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, LOCATOR_SLOT_TRAVEL, cornerFasteners, enclosureLayout, lidRimWidth,
+  LOCATOR_HEIGHT, LOCATOR_RECESS_DEPTH, cornerFasteners, enclosureLayout, lidRimWidth,
 } from './definitions.js'
 
 const ARC_STEPS = 16
@@ -194,12 +194,8 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     const cornerX = p.width / 2 - p.wall / 2
     const cornerY = p.depth / 2 - p.wall / 2
     const envelope = [wallContour(p.wall / 2)]
-    const diagonal = Math.hypot(x, y)
-    const slotX = LOCATOR_SLOT_TRAVEL * x / diagonal
-    // Lid print coordinates reverse Y when the lid is assembled.
-    const slotY = -LOCATOR_SLOT_TRAVEL * y / diagonal
-
     positions.forEach((position, index) => {
+      // Lid print coordinates reverse Y when the lid is assembled.
       const lid = { x: position.x, y: -position.y }
       if (Number.isFinite(bossRadius)) {
         const circle = own(CrossSection.circle(bossRadius, 64))
@@ -224,15 +220,8 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
       if (index % 2 !== 0 || !Number.isFinite(collarRadius)) return
       const collar = own(Manifold.cylinder(LOCATOR_HEIGHT + BOOLEAN_OVERLAP, collarRadius, collarRadius - 0.25, 64, true))
       collars.push(move(collar, [position.x, position.y, p.height + (LOCATOR_HEIGHT - BOOLEAN_OVERLAP) / 2]))
-      if (!Number.isFinite(recessRadius)) return
-      const recess = (center) => verticalCylinder(center, p.thickness - LOCATOR_RECESS_DEPTH, p.thickness + BOOLEAN_OVERLAP, recessRadius)
-      if (index === 0) {
-        lidHoles.push(recess(lid))
-      } else {
-        lidHoles.push(own(Manifold.hull([
-          recess({ x: lid.x - slotX, y: lid.y - slotY }),
-          recess({ x: lid.x + slotX, y: lid.y + slotY }),
-        ])))
+      if (Number.isFinite(recessRadius)) {
+        lidHoles.push(verticalCylinder(lid, p.thickness - LOCATOR_RECESS_DEPTH, p.thickness + BOOLEAN_OVERLAP, recessRadius))
       }
     })
     return { pads, collars, pilots, lidHoles }
