@@ -459,6 +459,48 @@ test('snap-fit corner samples have four solid seats and catches flush with the w
   inspectSTL(sampleSTL(wider))
 })
 
+test('snap-fit seat clearance works on all four corners and defaults to zero in saved projects', () => {
+  const project = newProject()
+  const mount = snapFitMount()
+  project.root.children.push(mount)
+  const exportSample = (source) => sampleSTL(buildSample(geometry, evaluateSample(source, 'root.children.0')))
+  const before = exportSample(project)
+  const beforeBase = enclosureSTL(build(project), 'base')
+
+  delete mount.parameters.seatClearance
+  const restored = parseProject(projectJSON(project))
+  assert.deepEqual(exportSample(restored), before)
+  assert.deepEqual(enclosureSTL(build(restored), 'base'), beforeBase)
+
+  mount.parameters.seatClearance = '= 1 + 1'
+  const edited = parseProject(projectJSON(project))
+  assert.equal(edited.root.children[0].parameters.seatClearance, '= 1 + 1')
+  const model = build(edited)
+  const surface = raycastSurface(model.base)
+  const down = new THREE.Vector3(0, 0, -1)
+  const zAt = (x, y) => new THREE.Raycaster(new THREE.Vector3(x, y, 20), down).intersectObject(surface)[0].point.z
+  const { floor } = project.root.parameters
+  for (const x of [-1, 1]) {
+    for (const y of [-1, 1]) {
+      assert(Math.abs(zAt(x * 15, y * 10) - floor) < 0.001, 'the notch reaches the floor')
+      for (const [seatX, seatY] of [[17, 10], [15, 12]]) {
+        assert(Math.abs(zAt(x * seatX, y * seatY) - floor - mount.parameters.baseHeight) < 0.001)
+      }
+    }
+  }
+  surface.geometry.dispose()
+  surface.material.dispose()
+  const removed = inspectSTL(beforeBase).volume - inspectSTL(enclosureSTL(model, 'base')).volume
+  assert(Math.abs(removed - 4 * 2 ** 2 * mount.parameters.baseHeight) < 0.01)
+  inspectSTL(exportSample(edited))
+
+  mount.parameters.seatClearance = 5
+  assert.deepEqual(evaluateProject(project).issues, [])
+  mount.parameters.seatClearance = 5.1
+  assert.deepEqual(evaluateProject(project).issues.map(({ field }) => field), ['root.children.0.parameters.seatClearance'])
+  assert.throws(() => evaluateSample(project, 'root.children.0'), /at least 1 mm smaller/)
+})
+
 test('PCB corner mount validation uses the selected mode and rejects intersecting seats or misplaced holes', () => {
   const project = newProject()
   const mount = makeChild('pcb-corner-mount')

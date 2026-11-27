@@ -106,7 +106,8 @@ function selectField(path, label, options, value) {
 function fields(schema, values, path) {
   const grid = element('div', 'fields')
   for (const [key, spec] of Object.entries(schema)) {
-    grid.append(textField(path + '.' + key, spec.label, values[key], spec))
+    const value = spec.defaultIfMissing && values[key] === undefined ? spec.value : values[key]
+    grid.append(textField(path + '.' + key, spec.label, value, spec))
   }
   return grid
 }
@@ -454,7 +455,7 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
     if (object.type === 'pcb-corner-mount') {
       const hint = object.properties.fastening === 'screw'
         ? 'Measure insets from the PCB edges to the hole centers. Base height sets the board’s underside.'
-        : 'Tuck one edge of the board under two catches, then press the opposite edge down.'
+        : 'Corner seat clearance sets the size of the square notch for pins. Tuck one edge under two catches, then press the opposite edge down.'
       parameterPanel.content.append(element('p', 'field-hint', hint))
     }
     selected.append(parameterPanel.details)

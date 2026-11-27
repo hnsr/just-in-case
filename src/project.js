@@ -142,6 +142,9 @@ function validatePCBMount(p, fastening, issue) {
     if (2 * seatX + 0.5 > Math.min(p.boardWidth, p.boardDepth)) {
       issue('seatSize', 'Reduce the corner seat size to leave at least 0.5 mm between the seats.')
     }
+    if (p.seatClearance > seatX - 1 + 1e-8) {
+      issue('seatClearance', 'Keep the corner seat clearance at least 1 mm smaller than the corner seat size to support the board.')
+    }
     return
   }
   const radius = p.pilotDiameter / 2
@@ -256,7 +259,8 @@ function evaluate(project, samplePath) {
     return Object.fromEntries(Object.entries(schema).map(([key, spec]) => {
       const location = path + '.' + key
       try {
-        const value = evaluateFormula(source[key], variable)
+        const expression = spec.defaultIfMissing && source[key] === undefined ? spec.value : source[key]
+        const value = evaluateFormula(expression, variable)
         if (spec.integer && !Number.isInteger(value)) throw new Error('Enter a whole number.')
         if (value < spec.min || value > spec.max) throw new Error('Use ' + spec.min + ' to ' + spec.max + (spec.unit ? ' ' + spec.unit : '') + '.')
         values.set(location, value)

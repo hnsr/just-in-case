@@ -262,7 +262,13 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     )
 
     // X and Y run inward from the nominal board corner.
-    const pad = extrude([[outside, outside], [seatX, outside], [seatX, seatY], [outside, seatY]],
+    const seatClearance = fastening === 'snap-fit' ? parameters.seatClearance : 0
+    const notchX = seatX - seatClearance
+    const notchY = seatY - seatClearance
+    const innerCorner = seatClearance > 0
+      ? [[seatX, notchY], [notchX, notchY], [notchX, seatY]]
+      : [[seatX, seatY]]
+    const pad = extrude([[outside, outside], [seatX, outside], ...innerCorner, [outside, seatY]],
       -BOOLEAN_OVERLAP, baseHeight)
     const outline = [[outside, outside], [seatX, outside], [seatX, inside],
       [inside, inside], [inside, seatY], [outside, seatY]]
