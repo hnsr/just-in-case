@@ -31,5 +31,6 @@ Use **Change enclosure** to choose a lidded, base-only, screw-fastened, or split
 - **Child placement** starts at the center of the chosen part’s interior floor or ceiling. X, Y, and Z follow that part’s print orientation. Nested children use the position and rotation of their parent.
 - **Export STL** downloads either part or both parts side by side with an 8 mm gap. Each part exports with its outside face on the print bed.
 - To print a fit sample, choose **Export STL** from an additive object's **More actions** menu. An object sample includes its descendants and their cuts, excluding reference geometry. The sample keeps its print orientation and rests on the print bed at its lowest point.
+- Choose **Export fit sample** on a wall cutout card to print the opening and a short section of wall around it. The sample includes the floor or ceiling when close to the opening. Cutouts spanning the split seam export two pieces side by side with the mating lip.
 
 The editor autosaves the last valid project in this browser. **Save JSON** and **Open JSON** let you keep and share editable designs in the current format. When the format version changes, the editor starts with the example and saves it under the new version.

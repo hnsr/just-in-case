@@ -2,7 +2,7 @@ import { evaluateFormula, VARIABLE_NAME } from './formula.js'
 import {
   ROOT_TYPES, CHILD_TYPES, FEATURES, PRIMITIVES, REPEATER_OPERATIONS, PLACEMENT_FIELDS, SIDES, SHAPES,
   CABLE_DUCT_FITS, cableDuctMinimumWidth,
-  PCB_MOUNT_FASTENINGS, PCB_PILOT_MARGIN, pcbSeatSize,
+  PCB_MOUNT_FASTENINGS, PCB_PILOT_MARGIN, SCREW_FIELDS, pcbSeatSize,
   LOCATOR_RECESS_DEPTH, cornerFasteners, isScrewParameter, enclosureLayout, featureFields, fieldDefaults, lidRimWidth,
   makePrimitive, parameterFields,
 } from './definitions.js'
@@ -161,13 +161,12 @@ function validatePCBMount(p, fastening, issue) {
   }
 }
 
-function validateRoot(root, mark) {
+function validateEnclosureShell(root, mark) {
   const p = root.parameters
   const { baseHeight, upperHeight, height, hasUpper } = enclosureLayout(root)
   const narrowest = Math.min(p.width, p.depth)
   const lip = hasUpper ? p.lip ?? 0 : 0
   const thickness = hasUpper ? p.thickness : 0
-  const wallTop = root.type === 'split' ? height - thickness : baseHeight
   const field = (key, message) => mark('root.parameters.' + key, message)
   if (p.radius > narrowest / 2 - 1) field('radius', 'Leave 2 mm of straight edge between the rounded corners.')
   if (narrowest - 2 * p.wall < 4) field('wall', 'Leave at least 4 mm of interior width and depth.')
@@ -178,26 +177,38 @@ function validateRoot(root, mark) {
     field('clearance', 'Reduce the wall thickness or clearance to leave room inside the lip.')
   }
 
-  if (root.type === 'screw-fastened') validateCornerFasteners(p, field)
-  root.features.forEach((feature, index) => {
-    const f = feature.parameters
-    const label = FEATURES[feature.type].label + ' ' + (index + 1)
-    const issue = (key, message) => mark('root.features.' + index + '.parameters.' + key, label + ' ' + message)
-    const wallLength = ['Front', 'Back'].includes(feature.properties.side) ? p.width : p.depth
-    const openingHeight = feature.properties.shape === 'Circle' ? f.width : f.height
-    if (Math.abs(f.offset) + f.width / 2 > wallLength / 2 - Math.max(p.radius, p.wall) - 1) {
-      issue('offset', 'must fit on the straight wall with 1 mm of room at each end.')
+}
+
+function validateWallCutout(root, feature, index, mark) {
+  const p = root.parameters
+  const { baseHeight, height } = enclosureLayout(root)
+  const f = feature.parameters
+  const { side, shape, placement } = feature.properties
+  const label = FEATURES[feature.type].label + ' ' + (index + 1)
+  const issue = (key, message) => mark('root.features.' + index + '.parameters.' + key, label + ' ' + message)
+  const wallLength = ['Front', 'Back'].includes(side) ? p.width : p.depth
+  const openingHeight = shape === 'Circle' ? f.width : f.height
+  const wallTop = root.type === 'split' ? height - p.thickness : baseHeight
+  if (Math.abs(f.offset) + f.width / 2 > wallLength / 2 - Math.max(p.radius, p.wall) - 1) {
+    issue('offset', 'must fit on the straight wall with 1 mm of room at each end.')
+  }
+  if (f.z - openingHeight / 2 < p.floor + 0.5 || f.z + openingHeight / 2 > wallTop - 1) {
+    if (placement === 'seam') {
+      const circular = shape === 'Circle'
+      issue(circular ? 'width' : 'height', 'needs 0.5 mm above the floor and 1 mm below the ceiling. Reduce the ' +
+        (circular ? 'diameter' : 'height') + ' or move the split seam.')
+    } else {
+      issue('z', 'needs 0.5 mm above the floor and 1 mm below the top of the wall.')
     }
-    if (f.z - openingHeight / 2 < p.floor + 0.5 || f.z + openingHeight / 2 > wallTop - 1) {
-      if (feature.properties.placement === 'seam') {
-        const circular = feature.properties.shape === 'Circle'
-        issue(circular ? 'width' : 'height', 'needs 0.5 mm above the floor and 1 mm below the ceiling. Reduce the ' +
-          (circular ? 'diameter' : 'height') + ' or move the split seam.')
-      } else {
-        issue('z', 'needs 0.5 mm above the floor and 1 mm below the top of the wall.')
-      }
-    }
-  })
+  }
+}
+
+function validateRoot(root, mark) {
+  validateEnclosureShell(root, mark)
+  if (root.type === 'screw-fastened') {
+    validateCornerFasteners(root.parameters, (key, message) => mark('root.parameters.' + key, message))
+  }
+  root.features.forEach((feature, index) => validateWallCutout(root, feature, index, mark))
 }
 
 export function evaluateProject(project) {
@@ -341,6 +352,22 @@ function evaluate(project, samplePath) {
   }
 
   function prepareSample(path) {
+    if (/^root\.features\.\d+$/.test(path)) {
+      const source = project.root
+      const index = Number(path.split('.').at(-1))
+      const feature = source?.features?.[index]
+      demand(feature?.type === 'cutout', 'Choose a wall cutout to export a fit sample.')
+      demand(record(source) && Object.hasOwn(ROOT_TYPES, source.type) && record(source.properties),
+        'Choose an enclosure type as the project root.')
+      const { type, properties } = source
+      if (type === 'lidded') demand(typeof properties.includeLid === 'boolean', 'Choose whether the enclosure has a lid.')
+      const schema = Object.fromEntries(Object.entries(parameterFields(source)).filter(([key]) => !Object.hasOwn(SCREW_FIELDS, key)))
+      const root = { type, properties, parameters: fields(source.parameters, schema, 'root.parameters') }
+      const cutout = visitFeature(feature, path, root)
+      validateEnclosureShell(root, mark)
+      validateWallCutout(root, cutout, index, mark)
+      return { root, cutout, label: cutout.properties.side + ' wall cutout ' + (index + 1) }
+    }
     demand(/^root(?:\.children\.\d+)+$/.test(path), 'Choose a non-root object to export a sample.')
     const indices = path.split('.children.').slice(1)
     demand(indices.length <= MAX_DEPTH, 'The object hierarchy is too deep.')

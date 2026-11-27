@@ -372,7 +372,7 @@ details[open] .section-icon { color: var(--accent); }
 .feature-card > summary { min-height: 40px; padding: 0.45rem 0.68rem; font-size: 0.86rem; }
 .feature-card .section-content { padding: 0 0.68rem 0.6rem; }
 .feature-options { margin-bottom: 0.8rem; }
-.feature-actions { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
+.feature-actions { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
 .primitive-box { padding: 0.68rem; }
 .primitive-box .fields { margin-top: 0.68rem; }
 [data-repeat-settings] { margin-top: 0.75rem; }

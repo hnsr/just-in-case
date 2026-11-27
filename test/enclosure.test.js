@@ -295,9 +295,69 @@ test('a cable duct sample keeps its full pedestal and skips enclosure clearance 
   assert.deepEqual(stl.min, [-7, -20, 0])
   assert.deepEqual(stl.max, [7, 20, 25.65])
   assert.equal(sample.floatingPieces, 0)
-  assert.throws(() => evaluateSample(project, 'root.features.0'), /non-root object/)
+  assert.throws(() => evaluateSample(project, 'root.features.0'), /Unknown variable.*missingFloor/)
   duct.parameters.baseWidth = 10
   assert.throws(() => evaluateSample(project, path), /base at least 11.2 mm wide/)
+})
+
+test('wall fit samples retain the opening, wall thickness, and nearby floor independently', () => {
+  const project = newProject('screw-fastened')
+  Object.assign(project.root.parameters, { wall: 3.1, bossDiameter: 'unrelated' })
+  project.variables.push({ name: 'portWidth', value: 10 }, { name: 'unused', value: 'missing' })
+  const port = cutout('Front', 'Rectangle', 'portWidth', 5, 9, 7)
+  project.root.features.push(port, cutout('Right', 'Circle', 'otherMissing', 6, 0, 12))
+  const child = makeChild('repeater')
+  child.parameters.primitive.parameters.height = 'childMissing'
+  project.root.children.push(child)
+
+  const path = 'root.features.0'
+  const selection = evaluateSample(project, path)
+  assert.equal(selection.label, 'Front wall cutout 1')
+  const sample = buildSample(geometry, selection)
+  const stl = inspectSTL(sampleSTL(sample))
+  assert.deepEqual(stl.min, [-10, -4.05, 0])
+  assert.deepEqual(stl.max, [10, 4.05, 14.5])
+  assert.equal(sample.floatingPieces, 0)
+
+  const surface = raycastSurface(sample.mesh)
+  const hits = (start, direction) => new THREE.Raycaster(new THREE.Vector3(...start), new THREE.Vector3(...direction))
+    .intersectObject(surface).map(({ point }) => point)
+  assert.equal(hits([0, -8, 7], [0, 1, 0]).length, 0)
+  const [outside, inside] = hits([6, -8, 7], [0, 1, 0])
+  assert(Math.abs(inside.y - outside.y - 3.1) < 0.001)
+  assert(Math.abs(hits([0, 0, 16], [0, 0, -1])[0].z - 2.4) < 0.001)
+  surface.geometry.dispose()
+  surface.material.dispose()
+
+  port.parameters.z = 17
+  const higher = inspectSTL(sampleSTL(buildSample(geometry, evaluateSample(project, path))))
+  assert.deepEqual(higher.max, [10, 1.55, 15])
+  port.parameters.offset = 48
+  assert.throws(() => evaluateSample(project, path), /must fit on the straight wall/)
+})
+
+test('split seam fit samples pack both print-oriented wall pieces with the real lip relief', () => {
+  const project = newProject('split')
+  const port = cutout('Front', 'Circle', 6, 6, 12, 'unusedAtSeam')
+  port.properties.placement = 'seam'
+  project.root.features.push(port)
+  const sample = buildSample(geometry, evaluateSample(project, 'root.features.0'))
+  const stl = inspectSTL(sampleSTL(sample))
+  assert.equal(sample.floatingPieces, 0)
+  assert.equal(stl.min[2], 0)
+  assert.equal(stl.max[0] - stl.min[0], 40)
+  assert.equal(stl.max[2], 11.2)
+
+  const surface = raycastSurface(sample.mesh)
+  const hitsWall = (x, z) => new THREE.Raycaster(new THREE.Vector3(x, -10, z), new THREE.Vector3(0, 1, 0))
+    .intersectObject(surface).length > 0
+  assert(!hitsWall(-12, 7.5), 'the lower half has its half of the opening')
+  assert(!hitsWall(12, 7.5), 'the upper half has its half of the opening')
+  assert(!hitsWall(14.8, 10.9), 'the lip relief clears the board-side portion of the bore')
+  assert(hitsWall(15.5, 10.9), 'the adjacent lip remains at its full depth')
+  assert(!hitsWall(0, 1), 'the pieces have a gap on the print bed')
+  surface.geometry.dispose()
+  surface.material.dispose()
 })
 
 test('cable duct fit presets adjust the sample grip and the opening under the lip', () => {

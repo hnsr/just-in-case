@@ -364,7 +364,9 @@ export function createInspector(getProject, getEvaluatedRoot, onChange, onSelect
       onChange()
     })
     remove.setAttribute('aria-label', 'Remove ' + title.toLowerCase() + ' ' + (index + 1))
-    actions.append(remove)
+    const exportFit = button('Export fit sample', 'download', 'button button-quiet button-small', () => onExportSample(key))
+    exportFit.setAttribute('aria-label', 'Export fit sample for ' + title.toLowerCase() + ' ' + (index + 1))
+    actions.append(remove, exportFit)
     content.append(actions)
     return details
   }

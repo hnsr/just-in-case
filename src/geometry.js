@@ -57,7 +57,7 @@ export function buildEnclosure(engine, root, options) {
 }
 
 export function buildSample(engine, sample) {
-  return buildGeometry(engine, null, { sample })
+  return buildGeometry(engine, sample.root ?? null, { sample })
 }
 
 function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false, screwIssues = [], hiddenPaths, sample } = {}) {
@@ -155,12 +155,16 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
     })))
   }
 
+  function cutoutReach() {
+    return root.type === 'split' && p.lip > 0 ? p.wall + p.clearance + lidRimWidth(p) : p.wall
+  }
+
   function opening(feature, { lipRelief = false } = {}) {
     const { side, shape } = feature.properties
     const { width, height, offset, z } = feature.parameters
     const horizontal = side === 'Front' || side === 'Back'
     const sign = side === 'Left' || side === 'Front' ? -1 : 1
-    const reach = root.type === 'split' && p.lip > 0 ? p.wall + p.clearance + lidRimWidth(p) : p.wall
+    const reach = cutoutReach()
     const length = reach + 2 * BOOLEAN_OVERLAP
     const center = sign * ((horizontal ? p.depth : p.width) / 2 - reach / 2)
     const centerZ = lipRelief ? z - p.lip / 2 : z
@@ -553,10 +557,75 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
   // converts between its print frame and the assembled enclosure frame.
   const flipUpper = (solid) => move(rotate(solid, [180, 0, 0]), [0, 0, layout.height])
 
+  function upperShell(cutoutFeatures) {
+    if (!p.lip) return root.type === 'split' ? tray(layout.upperHeight, p.thickness) : prism(0, p.thickness)
+    const fit = p.wall + p.clearance
+    const innerInset = fit + lidRimWidth(p)
+    const start = layout.upperHeight - BOOLEAN_OVERLAP
+    const outer = prism(fit, p.lip + BOOLEAN_OVERLAP, start)
+    if (root.type === 'split') {
+      // Open the lip to its free edge while the bore still defines the outer wall profile.
+      const reliefs = cutoutFeatures.filter(({ properties }) => properties.placement === 'seam')
+        .map((feature) => flipUpper(opening(feature, { lipRelief: true })))
+      return subtract(union(prism(0, layout.upperHeight), [subtract(outer, reliefs)]), [slopedLipCavity(innerInset)])
+    }
+    const inner = prism(innerInset, p.lip + 3 * BOOLEAN_OVERLAP, start - BOOLEAN_OVERLAP)
+    return union(prism(0, p.thickness), [subtract(outer, [inner])])
+  }
+
+  function wallFitSample(feature) {
+    const margin = 5
+    const { side, shape } = feature.properties
+    const { width, height, offset, z } = feature.parameters
+    const horizontal = side === 'Front' || side === 'Back'
+    const sign = side === 'Front' || side === 'Left' ? -1 : 1
+    const across = horizontal ? p.depth : p.width
+    const boreHeight = shape === 'Circle' ? width : height
+    const boreMin = z - boreHeight / 2
+    const boreMax = z + boreHeight / 2
+    const seam = layout.baseHeight
+    const split = root.type === 'split'
+    const includeBase = !split || boreMin < seam
+    const includeUpper = split && boreMax > seam - p.lip
+    const both = includeBase && includeUpper
+    const low = both ? Math.min(boreMin - margin, seam - p.lip - margin) : boreMin - margin
+    const high = both ? Math.max(boreMax + margin, seam + margin) : boreMax + margin
+    // Keep the full floor or ceiling when a connector could reach it, and crop away the opposite wall.
+    const bottom = low <= p.floor ? -BOOLEAN_OVERLAP : low
+    const top = split && high >= layout.height - p.thickness ? layout.height + BOOLEAN_OVERLAP : high
+    const reach = cutoutReach()
+    const depth = Math.min(reach + margin, across - reach - BOOLEAN_OVERLAP)
+    const acrossCenter = sign * (across / 2 + (BOOLEAN_OVERLAP - depth) / 2)
+    const along = width + 2 * margin
+    const through = depth + BOOLEAN_OVERLAP
+    const crop = box(
+      horizontal ? [along, through, top - bottom] : [through, along, top - bottom],
+      horizontal ? [offset, acrossCenter, (top + bottom) / 2] : [acrossCenter, offset, (top + bottom) / 2],
+    )
+    const cutter = opening(feature)
+    const pieces = []
+    if (includeBase) pieces.push(own(subtract(tray(seam, p.floor), [cutter]).intersect(crop)))
+    if (includeUpper) {
+      const upper = subtract(upperShell([feature]), [flipUpper(cutter)])
+      pieces.push(own(upper.intersect(flipUpper(crop))))
+    }
+    if (pieces.some((piece) => piece.status() !== 'NoError' || piece.isEmpty())) {
+      throw new Error('The wall cutout has no usable fit sample.')
+    }
+    if (pieces.length === 1) return pieces[0]
+    let nextX = 0
+    return own(Manifold.union(pieces.map((piece) => {
+      const { min, max } = piece.boundingBox()
+      const placed = move(piece, [nextX - min[0], -(min[1] + max[1]) / 2, -min[2]])
+      nextX += max[0] - min[0] + 8
+      return placed
+    })))
+  }
+
   try {
     if (sample) {
-      const { solid: branch } = childGeometry(sample.object, 'sample', { surface: 0 })
-      const solid = rotate(branch, [0, 0, sample.ancestorAngle])
+      const solid = sample.cutout ? wallFitSample(sample.cutout)
+        : rotate(childGeometry(sample.object, 'sample', { surface: 0 }).solid, [0, 0, sample.ancestorAngle])
       if (solid.status() !== 'NoError' || solid.isEmpty()) throw new Error('The sample has no usable solid geometry.')
       const { min, max } = solid.boundingBox()
       const floatingPieces = solid.decompose().map(own)
@@ -577,24 +646,7 @@ function buildGeometry({ CrossSection, Manifold, Mesh }, root, { preview = false
       return { base: mesh(solid, layout.baseLabel), upper: null, visibleParts, layout, cutters, references, previewIssues, previewGuides }
     }
 
-    let upper
-    if (!p.lip) {
-      upper = root.type === 'split' ? tray(layout.upperHeight, p.thickness) : prism(0, p.thickness)
-    } else {
-      const fit = p.wall + p.clearance
-      const innerInset = fit + lidRimWidth(p)
-      const start = layout.upperHeight - BOOLEAN_OVERLAP
-      const outer = prism(fit, p.lip + BOOLEAN_OVERLAP, start)
-      // Open the lip to its free edge while the bore still defines the outer wall profile.
-      const reliefs = cutoutFeatures.filter(({ properties }) => properties.placement === 'seam')
-        .map((feature) => flipUpper(opening(feature, { lipRelief: true })))
-      if (root.type === 'split') {
-        upper = subtract(union(prism(0, layout.upperHeight), [subtract(outer, reliefs)]), [slopedLipCavity(innerInset)])
-      } else {
-        const inner = prism(innerInset, p.lip + 3 * BOOLEAN_OVERLAP, start - BOOLEAN_OVERLAP)
-        upper = union(prism(0, p.thickness), [subtract(outer, [inner])])
-      }
-    }
+    const upper = upperShell(cutoutFeatures)
     const upperChildren = childGroups(root.children, 'root', {
       part: 'upper', surface: p.thickness, availableHeight: layout.height - p.floor,
     })
